@@ -1,1 +1,1 @@
-# PEEnv
+# Graph Persuit Evasion Game Environment
