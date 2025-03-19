@@ -102,32 +102,34 @@ class GPE(ParallelEnv):
         # We'll use a Dict space for more structured observations
         observation_spaces = {}
         for agent in self.possible_agents:
-            if agent.startswith("pursuer"):
+            if agent.startswith("pursuer"):  # if start with pursuer ???
                 observation_spaces[agent] = Dict(
                     {
-                        "position": Discrete(self.num_nodes),
+                        "position": Discrete(
+                            self.num_nodes
+                        ),  # can be all nodes (mask further)
                         "pursuers": Box(
                             low=0,
                             high=self.num_nodes - 1,
                             shape=(self.num_pursuers,),
                             dtype=np.int32,
-                        ),
+                        ),  # location of pursuers
                         "evaders": Box(
                             low=0,
                             high=self.num_nodes - 1,
                             shape=(self.num_evaders,),
                             dtype=np.int32,
-                        ),
+                        ),  # location of evaders
                         "adjacency": Box(
                             low=0, high=1, shape=(self.num_nodes,), dtype=np.int32
-                        ),
+                        ),  # adjacent nodes for current node
                     }
                 )
             else:  # evader
                 observation_spaces[agent] = Dict(
                     {
                         "position": Discrete(self.num_nodes),
-                        "safe_node": Discrete(self.num_nodes),
+                        "safe_node": Discrete(self.num_nodes),  # special for evader
                         "pursuers": Box(
                             low=0,
                             high=self.num_nodes - 1,
@@ -155,6 +157,7 @@ class GPE(ParallelEnv):
 
         # Generate a random graph with approximately num_edges edges
         # Using Erdős-Rényi random graph model
+        # The probability of connecting two nodes is p = 2 * num_edges / (num_nodes * (num_nodes - 1))
         p = 2 * self.num_edges / (self.num_nodes * (self.num_nodes - 1))
         graph = nx.gnp_random_graph(
             self.num_nodes, p, seed=self.np_random.randint(10000)
@@ -164,7 +167,7 @@ class GPE(ParallelEnv):
         if not nx.is_connected(graph):
             # Get the largest connected component
             largest_cc = max(nx.connected_components(graph), key=len)
-            graph = graph.subgraph(largest_cc).copy()
+            graph = graph.subgraph(largest_cc).copy()  # check !!!!!!!!!!
 
             # Add some random edges to ensure connectivity
             nodes = list(graph.nodes())

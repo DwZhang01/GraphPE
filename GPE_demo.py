@@ -10,8 +10,8 @@ def test_environment():
     """
     # Create the environment with a smaller graph for visualization
     env = GPE(
-        num_nodes=20,
-        num_edges=40,
+        num_nodes=200,
+        num_edges=400,
         num_pursuers=2,
         num_evaders=1,
         capture_distance=1,
