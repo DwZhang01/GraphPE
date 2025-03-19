@@ -18,6 +18,7 @@ def test_environment():
         required_captors=1,
         max_steps=50,
         seed=42,
+        render_mode="rgb_array",
     )
 
     # Reset the environment
