@@ -143,4 +143,15 @@ def visualize_graph(env):
 
 
 if __name__ == "__main__":
+
+    """Problems:
+    1. Number of Nodes and Edges, 10,100,1000,10000?
+    2. Number of Pursuers and Evaders, and how to initialize their positions
+    3. Visualization of the graph
+    4. Action policy of the agents. Shortest path ? A* ? RRT ? RL ?
+    5. Pursuer cannot observe the position of safe node
+    6. Evader can observe the position of safe node
+
+    """
+
     test_environment()
