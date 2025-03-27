@@ -3,25 +3,17 @@ import networkx as nx
 
 
 class ShortestPathStrategy:
-    """
-    Base class for shortest path-based strategies.
-    """
 
     def __init__(self, env):
         self.env = env
         self.graph = env.graph
 
     def choose_action(self, agent, observation):
-        """
-        Choose an action based on the shortest path to the target.
-        To be implemented by subclasses.
-        """
+
         raise NotImplementedError("Subclasses must implement this method")
 
     def get_shortest_path(self, start, target):
-        """
-        Get the shortest path from start to target.
-        """
+
         try:
             path = nx.shortest_path(self.graph, start, target)
             return path
@@ -29,9 +21,7 @@ class ShortestPathStrategy:
             return None
 
     def get_next_node_in_path(self, start, target):
-        """
-        Get the next node in the shortest path from start to target.
-        """
+
         path = self.get_shortest_path(start, target)
 
         if path is None or len(path) < 2:
@@ -41,9 +31,6 @@ class ShortestPathStrategy:
 
 
 class PursuerStrategy(ShortestPathStrategy):
-    """
-    Strategy for pursuers to chase the nearest evader.
-    """
 
     def choose_action(self, agent, observation):
         current_position = observation["position"]
@@ -78,20 +65,15 @@ class PursuerStrategy(ShortestPathStrategy):
 
 
 class EvaderStrategy(ShortestPathStrategy):
-    """
-    Strategy for evaders to reach the safe node while avoiding pursuers.
-    """
 
     def choose_action(self, agent, observation):
         current_position = observation["position"]
         safe_node = observation["safe_node"]
         pursuer_positions = observation["pursuers"]
 
-        # If already at safe node, stay there
         if current_position == safe_node:
             return current_position
 
-        # Get shortest path to safe node
         path_to_safe = self.get_shortest_path(current_position, safe_node)
 
         if path_to_safe is None or len(path_to_safe) < 2:
@@ -99,14 +81,11 @@ class EvaderStrategy(ShortestPathStrategy):
 
         next_node = path_to_safe[1]
 
-        # Check if moving to next_node would put us adjacent to a pursuer
-        # If so, try to find an alternative path
+        # check persuer
         for pursuer_pos in pursuer_positions:
-            # Check if pursuer is adjacent to next_node
             if next_node == pursuer_pos or pursuer_pos in self.graph.neighbors(
                 next_node
             ):
-                # Find alternative paths
                 alternative_neighbors = [
                     n
                     for n in self.graph.neighbors(current_position)

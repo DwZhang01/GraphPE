@@ -32,6 +32,7 @@ class GPE(ParallelEnv):
         seed=None,
         graph=None,
         render_mode=None,
+        p_act=0.8,
     ):
         """
         Initialize the Graph Pursuit Evasion environment.
@@ -52,6 +53,7 @@ class GPE(ParallelEnv):
         # Set random seed if provided
         self.np_random = np.random.RandomState(seed)
 
+        self.p_act = p_act
         # Environment parameters
         self.num_nodes = num_nodes
         self.num_edges = num_edges
@@ -284,6 +286,10 @@ class GPE(ParallelEnv):
         return observation
 
     def step(self, actions):
+
+        if random.random() < self.p_act:
+            pass
+
         """Execute actions for all agents and return new observations."""
         # Validate that all active agents provided actions
         if not actions.keys() == self.agents:
