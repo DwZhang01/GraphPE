@@ -2,6 +2,7 @@ import numpy as np
 import networkx as nx
 import matplotlib.pyplot as plt
 from GPE.env.graph_pe import GPE
+from shortest_path_strategies import ShortestPathStrategy
 
 
 def test_environment():
@@ -80,10 +81,12 @@ def choose_action(env, agent, observation):
     valid_neighbors = list(env.graph.neighbors(current_position))
 
     # Add current position as a valid choice (stay in place)
-    valid_actions = valid_neighbors + [current_position]
+    # valid_actions = valid_neighbors + [current_position]
 
+    action = ShortestPathStrategy(env, current_position, valid_neighbors)
     # Choose randomly
-    return np.random.choice(valid_actions)
+    # return np.random.choice(valid_actions)
+    return action
 
 
 def visualize_graph(env):

@@ -356,7 +356,7 @@ class GPE(ParallelEnv):
                 if pursuer_pos == evader_pos or pursuer_pos in evader_neighbors:
                     adjacent_pursuers += 1
 
-            # Check if capture conditions are met
+            # Check if capture conditions are met,
             if adjacent_pursuers >= self.required_captors:
                 # Evader is captured
                 self.captured_evaders.add(evader)

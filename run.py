@@ -43,20 +43,17 @@ def parse_args():
 
 def main():
     args = parse_args()
-    if args is None:
-        env = GPE()
-    # Create the environment
-    else:
-        env = GPE(
-            num_nodes=args.num_nodes,
-            num_edges=args.num_edges,
-            num_pursuers=args.num_pursuers,
-            num_evaders=args.num_evaders,
-            capture_distance=1,
-            required_captors=1,
-            max_steps=args.max_steps,
-            seed=args.seed,
-        )
+
+    env = GPE(
+        num_nodes=args.num_nodes,
+        num_edges=args.num_edges,
+        num_pursuers=args.num_pursuers,
+        num_evaders=args.num_evaders,
+        capture_distance=1,
+        required_captors=1,
+        max_steps=args.max_steps,
+        seed=args.seed,
+    )
 
     # Create strategies
     pursuer_strategy = PursuerStrategy(env)
