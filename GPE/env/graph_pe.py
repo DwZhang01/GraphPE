@@ -55,6 +55,10 @@ class GPE(ParallelEnv):
         graph=None,
         render_mode=None,
         p_act=0.8,  # Probability of ignoring chosen action and staying put
+        capture_reward_pursuer=10.0,
+        capture_reward_evader=-10.0,
+        escape_reward_evader=20.0,
+        escape_reward_pursuer=-5.0,
     ):
         """
         Initialize the GPE environment.
@@ -71,6 +75,10 @@ class GPE(ParallelEnv):
             graph: Predefined networkx graph object. If None, generates random graph.
             render_mode: 'human', 'rgb_array', or None.
             p_act: Probability of ignoring action and staying.
+            capture_reward_pursuer: Reward for pursuers when capturing an evader.
+            capture_reward_evader: Reward for evader when being captured.
+            escape_reward_evader: Reward for evader when reaching safe node.
+            escape_reward_pursuer: Reward for pursuers when evader reaches safe node.
         """
         super().__init__()
         # Set random seed
@@ -109,6 +117,11 @@ class GPE(ParallelEnv):
         self.truncations = None
         self.infos = None
         self.captured_evaders = set()
+
+        self.capture_reward_pursuer = capture_reward_pursuer
+        self.capture_reward_evader = capture_reward_evader
+        self.escape_reward_evader = escape_reward_evader
+        self.escape_reward_pursuer = escape_reward_pursuer
 
     def _initialize_spaces(self):
         """Initialize action and observation spaces for all agents."""
@@ -351,7 +364,7 @@ class GPE(ParallelEnv):
             current_position = self.agent_positions[agent]
 
             # 3a. Apply stochasticity: Agent might stay put with probability p_act
-            if self.np_random.random() < self.p_act:  # Use seeded random generator
+            if self.np_random.random() > self.p_act:  # Use seeded random generator
                 effective_action = current_position  # Force stay
             else:
                 effective_action = action  # Use agent's chosen action
@@ -414,52 +427,44 @@ class GPE(ParallelEnv):
 
     def _check_captures(self):
         """Check if any evaders have been captured."""
-        # Capture occurs if >= required_captors pursuers are at the same node
-        # or an adjacent node to the evader.
-        for evader in self.evaders:  # Check all potential evaders
-            if evader in self.captured_evaders:  # Skip already captured
+        capture_occurred = False
+
+        for evader in self.evaders:
+            if evader in self.captured_evaders:
                 continue
 
             evader_pos = self.agent_positions[evader]
-            # Get nodes adjacent to the evader
             evader_neighbors = list(self.graph.neighbors(evader_pos))
 
-            # Count adjacent pursuers
             adjacent_pursuers = 0
             for pursuer in self.pursuers:
                 pursuer_pos = self.agent_positions[pursuer]
-                # Check if pursuer is at the same node or an adjacent node
                 if pursuer_pos == evader_pos or pursuer_pos in evader_neighbors:
                     adjacent_pursuers += 1
 
-            # Check if capture condition met
             if adjacent_pursuers >= self.required_captors:
-                # Mark evader as captured
                 self.captured_evaders.add(evader)
-                # Positive reward for all pursuers
                 for pursuer in self.pursuers:
-                    self.rewards[pursuer] += 10.0
-                # Negative reward for the captured evader
-                self.rewards[evader] -= 10.0
-                # Mark evader as terminated for this episode
+                    self.rewards[pursuer] += self.capture_reward_pursuer
+                self.rewards[evader] += self.capture_reward_evader
                 self.terminations[evader] = True
+                capture_occurred = True
+
+            if capture_occurred:
+                for agent in self.agents:
+                    self.infos[agent]["capture"] = True
 
     def _check_safe_arrivals(self):
         """Check if any evaders have reached the safe node."""
-        # Rewards can be adjusted here
-        for evader in self.evaders:  # Check all potential evaders
-            if evader in self.captured_evaders:  # Skip captured ones
+        for evader in self.evaders:
+            if evader in self.captured_evaders:
                 continue
 
-            # Check if evader is at the safe node
             if self.agent_positions[evader] == self.safe_node:
-                # Positive reward for the successful evader
-                self.rewards[evader] += 20.0
-                # Mark evader as terminated for this episode
+                self.rewards[evader] += self.escape_reward_evader
                 self.terminations[evader] = True
-                # Negative reward for all pursuers (they failed to stop this evader)
                 for pursuer in self.pursuers:
-                    self.rewards[pursuer] -= 5.0
+                    self.rewards[pursuer] += self.escape_reward_pursuer
 
     def _check_termination(self):
         """Check if the overall game should terminate."""

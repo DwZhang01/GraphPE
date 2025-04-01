@@ -1,5 +1,15 @@
 # test*.py
 __pycache__/
 graph_pe_RAW.py
-# graph_pe_RawEn.py
-GPE_demo*.py
+graph_pe_RawEn.py
+GPE_demo.py
+GPE_demo2.py
+policy*
+test_SB3_api copy.py
+test_SB3_api_1.py
+test_SB3_api_2.py
+test_SB3_model_use.py
+*.png
+logs/
+models/
+training_logs/
