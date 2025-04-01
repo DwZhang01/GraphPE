@@ -1,3 +1,6 @@
+# This file uses mixed spaces {Box,Discrete}, which is deprecated.
+# This file uses mixed language {En,CH}, which is deprecated.
+
 import numpy as np
 import gymnasium as gym
 from gymnasium.spaces import Discrete, Box, Dict
