@@ -1,3 +1,5 @@
+# This file uses mixed spaces {Box,Discrete}, which is deprecated.
+
 import numpy as np
 import gymnasium as gym
 from gymnasium.spaces import Discrete, Box, Dict
@@ -117,37 +119,45 @@ class GPE(ParallelEnv):
             agent: Discrete(self.num_nodes) for agent in self.possible_agents
         }
 
-        # Observation space: Define a flat Box space for all agents
-        # Calculate the size needed for the flattened observation vector.
-        # Ensure pursuers and evaders have the same final size by padding.
-        pursuer_obs_size = (
-            1  # position
-            + self.num_pursuers  # pursuers positions
-            + self.num_evaders  # evaders positions
-            + self.num_nodes  # adjacency
-            + self.num_nodes  # action_mask
-        )
-        evader_obs_size = (
-            1  # position
-            + 1  # safe_node (extra item for evader)
-            + self.num_pursuers
-            + self.num_evaders
-            + self.num_nodes
-            + self.num_nodes
-        )
-        # Use the maximum size for both, we will pad pursuers' observations
-        flat_obs_size = max(pursuer_obs_size, evader_obs_size)
+        # Observation space: Dict containing agent info
+        observation_spaces = {}
+        for agent in self.possible_agents:
+            # --- Base observation dictionary structure ---
+            obs_dict = {
+                "position": Discrete(self.num_nodes),  # Agent's current node
+                "pursuers": Box(  # Positions of all pursuers
+                    low=0,  # Pursuers are always at valid nodes (0 to num_nodes-1)
+                    high=self.num_nodes - 1,
+                    shape=(self.num_pursuers,),
+                    dtype=np.int32,
+                ),
+                "evaders": Box(  # Positions of all evaders (-1 if captured)
+                    low=-1,
+                    high=self.num_nodes - 1,
+                    shape=(self.num_evaders,),
+                    dtype=np.int32,
+                ),
+                "adjacency": Box(  # Adjacency vector for current node (1 if neighbor)
+                    low=0,
+                    high=1,
+                    shape=(self.num_nodes,),
+                    dtype=np.int8,
+                ),
+                # --- Action mask: Indicates valid actions (stay + neighbors) ---
+                "action_mask": Box(
+                    low=0, high=1, shape=(self.num_nodes,), dtype=np.int8
+                ),
+            }
+            # --- Add safe_node info only for evaders ---
+            if agent.startswith("evader"):
+                obs_dict["safe_node"] = Discrete(
+                    self.num_nodes
+                )  # Location of the safe node
 
-        # Define the observation space as a single Box for all agents
-        # Note: The bounds need to accommodate all possible values (-1 to num_nodes-1 for positions)
-        self.observation_spaces = {
-            agent: Box(
-                low=-1, high=self.num_nodes, shape=(flat_obs_size,), dtype=np.float32
-            )  # Use float32 for SB3 compatibility
-            for agent in self.possible_agents
-        }
-        # Store component sizes for easy concatenation later (optional but helpful)
-        self._pursuer_padding_size = flat_obs_size - pursuer_obs_size
+            # --- Finalize the Dict space for this agent ---
+            observation_spaces[agent] = Dict(obs_dict)
+
+        self.observation_spaces = observation_spaces
 
     def _generate_graph(self):
         """Generate a random graph or use the provided one."""
@@ -261,62 +271,42 @@ class GPE(ParallelEnv):
         neighbors = list(self.graph.neighbors(position))
 
         # --- Calculate adjacency vector (for observation) ---
-        adjacency_obs = np.zeros(self.num_nodes, dtype=np.float32)  # Use float32
-        adjacency_obs[neighbors] = 1.0
+        adjacency_obs = np.zeros(self.num_nodes, dtype=np.int8)
+        adjacency_obs[neighbors] = 1  # Mark neighbors as 1
 
-        # Get agent positions
+        # --- Get other agent positions ---
         pursuer_positions = np.array(
-            [self.agent_positions[p] for p in self.pursuers],
-            dtype=np.float32,  # Use float32
+            [self.agent_positions[p] for p in self.pursuers], dtype=np.int32
         )
         evader_positions = np.array(
-            [  # Use -1.0 for captured evaders
-                self.agent_positions[e] if e not in self.captured_evaders else -1.0
+            [  # Use -1 for captured evaders
+                self.agent_positions[e] if e not in self.captured_evaders else -1
                 for e in self.evaders
             ],
-            dtype=np.float32,  # Use float32
+            dtype=np.int32,
         )
 
-        # Calculate action mask
-        action_mask = np.zeros(self.num_nodes, dtype=np.float32)  # Use float32
+        # --- Calculate action mask ---
+        # Valid actions: stay or move to a neighbor
+        action_mask = np.zeros(self.num_nodes, dtype=np.int8)
         valid_action_indices = [position] + neighbors  # Current node + neighbor nodes
-        action_mask[valid_action_indices] = 1.0
+        action_mask[valid_action_indices] = 1  # Mark valid action indices as 1
 
-        # Concatenate components into a flat vector
+        # --- Create observation dictionary ---
+        observation = {
+            "position": position,
+            "pursuers": pursuer_positions,
+            "evaders": evader_positions,
+            "adjacency": adjacency_obs,  # Adjacency vector
+            "action_mask": action_mask,  # Action mask
+        }
+
+        # --- Add safe node info for evaders ---
         if agent.startswith("evader"):
-            # Evader observation order: pos, safe, pursuers, evaders, adj, mask
-            observation_vector = np.concatenate(
-                [
-                    np.array([float(position)], dtype=np.float32),
-                    np.array(
-                        [float(self.safe_node)], dtype=np.float32
-                    ),  # Include safe_node
-                    pursuer_positions,
-                    evader_positions,
-                    adjacency_obs,
-                    action_mask,
-                ]
-            ).astype(np.float32)
-        else:  # Pursuer
-            # Pursuer observation order: pos, pursuers, evaders, adj, mask, [padding]
-            base_vector = np.concatenate(
-                [
-                    np.array([float(position)], dtype=np.float32),
-                    pursuer_positions,
-                    evader_positions,
-                    adjacency_obs,
-                    action_mask,
-                ]
-            )
-            # Add padding if necessary to match the evader's flat size
-            padding = np.zeros(
-                self._pursuer_padding_size, dtype=np.float32
-            )  # Use 0.0 for padding
-            observation_vector = np.concatenate([base_vector, padding]).astype(
-                np.float32
-            )
+            observation["safe_node"] = self.safe_node
 
-        return observation_vector
+        # --- Return the observation ---
+        return observation
 
     def step(self, actions):
         """Execute actions for all agents and return new observations."""
