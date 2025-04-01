@@ -19,8 +19,8 @@ This project implements a pursuit-evasion game where multiple pursuers attempt t
 
 ```bash
 # Clone the repository
-git clone [your-repo-url]
-cd [your-repo-name]
+git clone https://github.com/DwZhang01/GPE
+cd GPE
 
 # Install required packages
 pip install -r requirements.txt
@@ -122,7 +122,7 @@ Contributions are welcome! Please feel free to submit pull requests or create is
 
 ## License
 
-[Your License Information]
+[MIT license]
 
 ## Citation
 
