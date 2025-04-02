@@ -13,6 +13,8 @@ from stable_baselines3.ppo import MlpPolicy
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList, EventCallback
 import time
 
+MAX_STEP = 50
+
 
 # Create a callback to track rewards
 class MARLRewardCallback(BaseCallback):
@@ -204,13 +206,14 @@ def visualize_policy(model, env, num_episodes=3, max_steps=50, save_animation=Tr
 
             # 如果要保存动画，获取当前图像
             if save_animation:
-                # 将当前图像添加到帧列表
                 fig = plt.gcf()
-                # 转换为RGB数组
-                fig.canvas.draw()
-                image = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-                image = image.reshape(fig.canvas.get_width_height()[::-1] + (3,))
-                frames.append(image)
+                fig.canvas.draw()  # Ensure the canvas is drawn
+
+                # 直接渲染到 RGBA buffer (NumPy array)
+                image_rgba = np.array(fig.canvas.buffer_rgba())
+                # 转换为 RGB (丢弃 Alpha 通道)
+                image_rgb = image_rgba[:, :, :3]
+                frames.append(image_rgb)
 
             # Track rewards
             episode_reward = sum(rewards.values())
@@ -225,7 +228,7 @@ def visualize_policy(model, env, num_episodes=3, max_steps=50, save_animation=Tr
             plt.pause(1.0)  # 增加暂停时间到1秒
 
             # 添加按键控制（可选）
-            input("Press Enter to continue...")  # 每步都需要按回车继续
+            # input("Press Enter to continue...")  # 每步都需要按回车继续
 
             # Check if episode is done
             if any(terminations.values()) or any(truncations.values()):
@@ -251,16 +254,15 @@ def visualize_policy(model, env, num_episodes=3, max_steps=50, save_animation=Tr
             import imageio
 
             print("Saving animation...")
-            imageio.mimsave(
-                "pursuit_evasion.gif", frames, fps=1
-            )  # 使用较低的fps使动画更容易观察
+            # 确保传递的是 RGB 帧
+            imageio.mimsave("pursuit_evasion.gif", frames, fps=1)
             print("Animation saved as 'pursuit_evasion.gif'")
         except ImportError:
             print("Could not save animation: imageio package not found")
             print("Install it with: pip install imageio")
 
 
-class CaptureDebugCallback(EventCallback):
+class CaptureDebugCallback(BaseCallback):
     def __init__(self, verbose=0):
         super().__init__(verbose)
         self.capture_count = 0
@@ -275,7 +277,10 @@ class CaptureDebugCallback(EventCallback):
 
 
 # 新增详细信息回调
-class DetailedDebugCallback(EventCallback):
+class DetailedDebugCallback(BaseCallback):
+    def __init__(self, verbose=0):
+        super().__init__(verbose)
+
     def _on_step(self):
         if self.n_calls % 1000 == 0:  # 每1000步打印一次
             info = self.locals["infos"][0]
@@ -299,7 +304,7 @@ if __name__ == "__main__":
         "num_evaders": 1,
         "capture_distance": 1,
         "required_captors": 1,
-        "seed": 42,
+        # "seed": 42,
         "capture_reward_pursuer": 10.0,
         "capture_reward_evader": -10.0,
         "escape_reward_evader": 20.0,
@@ -312,6 +317,7 @@ if __name__ == "__main__":
         max_steps=50,
         render_mode=None,  # No rendering during training
     )
+    graph_for_viz = training_env.graph
 
     # Wrap the training environment for Stable Baselines3
     vec_env = ss.pettingzoo_env_to_vec_env_v1(training_env)
@@ -356,12 +362,25 @@ if __name__ == "__main__":
     # Close the training environment
     vec_env.close()
 
+    # --- 添加加载模型的代码 ---
+    print("Loading pre-trained model from 'policy.zip'...")
+    # 假设模型保存在 "policy.zip" (如果文件名不同请修改)
+    model_path = "policy.zip"
+    if not os.path.exists(model_path):
+        print(f"Error: Model file not found at {model_path}")
+        print("Please ensure the model was saved correctly after training.")
+        exit()  # 或者抛出异常
+    # 加载模型时不需要环境，但可视化时需要
+    model = PPO.load(model_path)
+    print("Model loaded successfully.")
+
     # Create a visualization environment (separate from training env)
     # This needs to be a direct GPE instance with human rendering enabled
     viz_env = GPE(
         **env_config,
-        max_steps=100,
+        max_steps=MAX_STEP,
         render_mode="human",  # Enable rendering
+        graph=graph_for_viz,
     )
 
     # Visualize the policy execution
@@ -370,7 +389,7 @@ if __name__ == "__main__":
         model,
         viz_env,
         num_episodes=3,
-        max_steps=100,
+        max_steps=MAX_STEP,
         save_animation=True,  # 启用动画保存
     )
 

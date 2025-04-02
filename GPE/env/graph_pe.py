@@ -54,7 +54,7 @@ class GPE(ParallelEnv):
         seed=None,
         graph=None,
         render_mode=None,
-        p_act=0.8,  # Probability of ignoring chosen action and staying put
+        p_act=1,  # Probability of ignoring chosen action and staying put
         capture_reward_pursuer=10.0,
         capture_reward_evader=-10.0,
         escape_reward_evader=20.0,
