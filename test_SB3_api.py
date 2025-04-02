@@ -12,6 +12,8 @@ from stable_baselines3 import PPO
 from stable_baselines3.ppo import MlpPolicy
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList, EventCallback
 import time
+import os
+from datetime import datetime
 
 MAX_STEP = 50
 
@@ -167,7 +169,14 @@ class MARLRewardCallback(BaseCallback):
         }
 
 
-def visualize_policy(model, env, num_episodes=3, max_steps=50, save_animation=True):
+def visualize_policy(
+    model,
+    env,
+    num_episodes=3,
+    max_steps=50,
+    save_animation=True,
+    use_shortest_path=False,
+):
     """
     Visualizes the execution of the trained policy in the provided GPE environment.
 
@@ -177,29 +186,70 @@ def visualize_policy(model, env, num_episodes=3, max_steps=50, save_animation=Tr
         num_episodes: Number of episodes to visualize
         max_steps: Maximum steps per episode
         save_animation: Whether to save the visualization as an animation file
+        use_shortest_path: Whether using shortest path actions instead of the model
     """
     print("Starting policy visualization...")
+    gif_save_dir = "viz_gif"
 
-    if save_animation:
-        frames = []  # 存储每一帧
+    if save_animation and not os.path.exists(gif_save_dir):
+        os.makedirs(gif_save_dir)
+        print(f"Created directory: {gif_save_dir}")
 
-    # Run several episodes for visualization
     for episode in range(num_episodes):
         print(f"\n--- Episode {episode+1}/{num_episodes} ---")
+        if save_animation:
+            frames = []
 
         observations, _ = env.reset()
         cumulative_reward = 0
 
+        # 打印初始状态信息
+        print(f"Episode start: {len(env.agents)} active agents")
+        print(f"Pursuers: {[p for p in env.agents if p.startswith('pursuer')]}")
+        print(f"Evaders: {[e for e in env.agents if e.startswith('evader')]}")
+
         for step in range(max_steps):
-            # Determine actions for all agents using the trained policy
+            # Determine actions for all ACTIVE agents only
             actions = {}
-            for agent, obs in observations.items():
-                obs_array = np.array(obs).reshape(1, -1)
-                action, _ = model.predict(obs_array, deterministic=True)
-                actions[agent] = action.item()
+
+            # 重要：这里确保我们只为当前活跃的智能体生成动作
+            for agent in env.agents:  # env.agents 在每一步后都会更新
+                if use_shortest_path:
+                    # 使用最短路径策略
+                    if agent.startswith("pursuer"):
+                        agent_id = int(agent.split("_")[1])
+                        action = env.shortest_path_action("pursuer", agent_id)
+                        if action is not None:  # 确保返回了有效动作
+                            actions[agent] = action
+                    elif agent.startswith("evader"):
+                        agent_id = int(agent.split("_")[1])
+                        action = env.shortest_path_action("evader", agent_id)
+                        if action is not None:  # 确保返回了有效动作
+                            actions[agent] = action
+                else:
+                    # 使用训练好的模型策略
+                    obs = observations[agent]  # 这里观察空间只会包含活跃智能体
+                    obs_array = np.array(obs).reshape(1, -1)
+                    action, _ = model.predict(obs_array, deterministic=False)
+                    actions[agent] = action.item()
+
+            # 在 step 执行前打印动作信息（可选）
+            print(
+                f"Step {step+1}: Active agents: {len(env.agents)}, Actions: {actions}"
+            )
 
             # Take a step in the environment
             observations, rewards, terminations, truncations, infos = env.step(actions)
+
+            # 在 step 执行后打印状态变化（可选）
+            term_agents = [a for a, t in terminations.items() if t]
+            trunc_agents = [a for a, t in truncations.items() if t]
+            if term_agents:
+                print(f"  Terminated agents: {term_agents}")
+            if trunc_agents:
+                print(f"  Truncated agents: {trunc_agents}")
+            if "capture" in infos.get(list(infos.keys())[0], {}):
+                print(f"  Capture occurred!")
 
             # Render the current state
             env.render()
@@ -225,7 +275,7 @@ def visualize_policy(model, env, num_episodes=3, max_steps=50, save_animation=Tr
             )
 
             # 添加暂停，让观察更清晰
-            plt.pause(1.0)  # 增加暂停时间到1秒
+            plt.pause(0.5)  # 增加暂停时间到1秒
 
             # 添加按键控制（可选）
             # input("Press Enter to continue...")  # 每步都需要按回车继续
@@ -244,22 +294,27 @@ def visualize_policy(model, env, num_episodes=3, max_steps=50, save_animation=Tr
         print(
             f"Episode {episode+1} complete. Cumulative reward: {cumulative_reward:.2f}"
         )
+        # 保存动画
+        if save_animation and frames:
+            try:
+                import imageio
+
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"GPE_{timestamp}_episode{episode+1}.gif"
+                filepath = os.path.join(gif_save_dir, filename)
+                # --- 结束新增 ---
+
+                print(f"Saving animation for episode {episode+1} to {filepath}...")
+                imageio.mimsave(filepath, frames, fps=1)  # 使用 frames 创建 GIF
+                # --- 添加完成 ---
+                print(f"Animation saved as {filepath}")
+            except ImportError:
+                print("Could not save animation: imageio package not found")
+                print("Install it with: pip install imageio")
+
         time.sleep(2)  # Pause between episodes
 
     print("Visualization complete!")
-
-    # 保存动画
-    if save_animation and frames:
-        try:
-            import imageio
-
-            print("Saving animation...")
-            # 确保传递的是 RGB 帧
-            imageio.mimsave("pursuit_evasion.gif", frames, fps=1)
-            print("Animation saved as 'pursuit_evasion.gif'")
-        except ImportError:
-            print("Could not save animation: imageio package not found")
-            print("Install it with: pip install imageio")
 
 
 class CaptureDebugCallback(BaseCallback):
@@ -298,23 +353,25 @@ class DetailedDebugCallback(BaseCallback):
 if __name__ == "__main__":
     # Environment configuration
     env_config = {
-        "num_nodes": 20,
-        "num_edges": 40,
+        "num_nodes": 50,
+        "num_edges": 100,
         "num_pursuers": 2,
         "num_evaders": 1,
         "capture_distance": 1,
         "required_captors": 1,
         # "seed": 42,
-        "capture_reward_pursuer": 10.0,
-        "capture_reward_evader": -10.0,
-        "escape_reward_evader": 20.0,
-        "escape_reward_pursuer": -5.0,
+        "capture_reward_pursuer": 20.0,
+        "capture_reward_evader": -20.0,
+        "escape_reward_evader": 100.0,
+        "escape_reward_pursuer": -100.0,
+        "stay_penalty": -0.1,
+        "max_steps": 50,
+        "p_act": 1,
     }
 
     # Create training environment
     training_env = GPE(
         **env_config,
-        max_steps=50,
         render_mode=None,  # No rendering during training
     )
     graph_for_viz = training_env.graph
@@ -331,11 +388,11 @@ if __name__ == "__main__":
         MlpPolicy,
         vec_env,
         verbose=1,  # 减少日志输出频率
-        gamma=0.95,
+        gamma=0.99,
         n_steps=256,
-        ent_coef=0.0905168,
-        learning_rate=0.00062211,
-        vf_coef=0.042202,
+        ent_coef=0.2,
+        learning_rate=0.1,
+        vf_coef=0.05,
         max_grad_norm=0.9,
         gae_lambda=0.99,
         n_epochs=5,
@@ -378,7 +435,6 @@ if __name__ == "__main__":
     # This needs to be a direct GPE instance with human rendering enabled
     viz_env = GPE(
         **env_config,
-        max_steps=MAX_STEP,
         render_mode="human",  # Enable rendering
         graph=graph_for_viz,
     )
@@ -391,6 +447,7 @@ if __name__ == "__main__":
         num_episodes=3,
         max_steps=MAX_STEP,
         save_animation=True,  # 启用动画保存
+        use_shortest_path=True,  # 添加这个参数，测试最短路径移动
     )
 
     # Close the visualization environment

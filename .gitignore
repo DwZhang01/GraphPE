@@ -14,3 +14,5 @@ logs/
 models/
 training_logs/
 bck/
+*.gif
+viz_gif/

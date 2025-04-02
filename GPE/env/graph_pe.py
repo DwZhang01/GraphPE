@@ -46,19 +46,20 @@ class GPE(ParallelEnv):
         self,
         num_nodes=100,
         num_edges=200,
-        num_pursuers=3,
-        num_evaders=2,
+        num_pursuers=5,
+        num_evaders=7,
         capture_distance=1,
         required_captors=1,
         max_steps=200,
         seed=None,
         graph=None,
         render_mode=None,
-        p_act=1,  # Probability of ignoring chosen action and staying put
-        capture_reward_pursuer=10.0,
-        capture_reward_evader=-10.0,
-        escape_reward_evader=20.0,
-        escape_reward_pursuer=-5.0,
+        p_act=1,
+        capture_reward_pursuer=20.0,
+        capture_reward_evader=-20.0,
+        escape_reward_evader=100.0,
+        escape_reward_pursuer=-100.0,
+        stay_penalty=-0.1,
     ):
         """
         Initialize the GPE environment.
@@ -122,6 +123,7 @@ class GPE(ParallelEnv):
         self.capture_reward_evader = capture_reward_evader
         self.escape_reward_evader = escape_reward_evader
         self.escape_reward_pursuer = escape_reward_pursuer
+        self.stay_penalty = stay_penalty
 
     def _initialize_spaces(self):
         """Initialize action and observation spaces for all agents."""
@@ -375,6 +377,9 @@ class GPE(ParallelEnv):
                 effective_action == current_position
                 or effective_action in self.graph.neighbors(current_position)
             )
+
+            if effective_action == current_position:
+                self.rewards[agent] += -self.stay_penalty  # Penalize staying put
 
             if is_valid_move:
                 next_positions[agent] = effective_action  # Store intended next position
@@ -648,3 +653,94 @@ class GPE(ParallelEnv):
         """Close the rendering window."""
         if hasattr(self, "fig") and plt.fignum_exists(self.fig.number):
             plt.close(self.fig.number)
+
+    def shortest_path_action(self, agent_type, agent_id):
+        """
+        Args:
+            agent_type: "pursuer" or "evader"
+            agent_id: Agent ID (0 to num_agents-1)
+
+        Returns:
+            action: Recommended action (node index) for the agent
+        """
+        agent_name = f"{agent_type}_{agent_id}"
+        if agent_name not in self.agents:
+            return None
+
+        current_pos = self.agent_positions[agent_name]
+
+        if agent_type == "pursuer":
+            min_distance = float("inf")
+            target_pos = None
+            target_path = None
+
+            for evader in self.evaders:
+                if evader in self.captured_evaders:
+                    continue
+
+                evader_pos = self.agent_positions[evader]
+                try:
+                    path = nx.shortest_path(self.graph, current_pos, evader_pos)
+                    distance = len(path) - 1
+
+                    if distance < min_distance:
+                        min_distance = distance
+                        target_pos = evader_pos
+                        target_path = path
+                except nx.NetworkXNoPath:
+                    continue
+
+            if target_path and len(target_path) > 1:
+                return target_path[1]
+
+        elif agent_type == "evader":
+            try:
+                path = nx.shortest_path(self.graph, current_pos, self.safe_node)
+                if len(path) > 1:
+                    return path[1]
+            except nx.NetworkXNoPath:
+                pass
+
+            if not path or len(path) <= 1:
+                min_distance = float("inf")
+                nearest_pursuer_pos = None
+
+                for pursuer in self.pursuers:
+                    pursuer_pos = self.agent_positions[pursuer]
+                    try:
+                        distance = (
+                            len(nx.shortest_path(self.graph, current_pos, pursuer_pos))
+                            - 1
+                        )
+                        if distance < min_distance:
+                            min_distance = distance
+                            nearest_pursuer_pos = pursuer_pos
+                    except nx.NetworkXNoPath:
+                        continue
+
+                # 尝试选择一个远离最近追踪者的邻居节点
+                if nearest_pursuer_pos is not None:
+                    neighbors = list(self.graph.neighbors(current_pos))
+                    best_neighbor = None
+                    max_escape_distance = -1
+
+                    for neighbor in neighbors:
+                        try:
+                            escape_distance = (
+                                len(
+                                    nx.shortest_path(
+                                        self.graph, neighbor, nearest_pursuer_pos
+                                    )
+                                )
+                                - 1
+                            )
+                            if escape_distance > max_escape_distance:
+                                max_escape_distance = escape_distance
+                                best_neighbor = neighbor
+                        except nx.NetworkXNoPath:
+                            continue
+
+                    if best_neighbor is not None:
+                        return best_neighbor
+
+        return current_pos
