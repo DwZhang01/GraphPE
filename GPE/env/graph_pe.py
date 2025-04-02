@@ -161,11 +161,15 @@ class GPE(ParallelEnv):
             )  # Use float32 for SB3 compatibility
             for agent in self.possible_agents
         }
+        # Total Size : n^2m^2
         # Store component sizes for easy concatenation later (optional but helpful)
         self._pursuer_padding_size = flat_obs_size - pursuer_obs_size
 
     def _generate_graph(self):
-        """Generate a random graph or use the provided one."""
+        """Generate a random graph or use the provided one.
+        MARK: It should be changed to a certain range of connection for each node.
+        """
+
         if self.custom_graph is not None:
             return copy(
                 self.custom_graph
@@ -212,55 +216,54 @@ class GPE(ParallelEnv):
         if seed is not None:
             self.np_random = np.random.RandomState(seed)
 
-        # Generate or use the graph
         self.graph = self._generate_graph()
-
-        # Reset episode variables
         self.timestep = 0
-        self.agents = self.possible_agents.copy()  # Initially, all agents are active
+        self.agents = self.possible_agents.copy()
         self.rewards = {agent: 0 for agent in self.agents}
         self.terminations = {agent: False for agent in self.agents}
         self.truncations = {agent: False for agent in self.agents}
         self.infos = {agent: {} for agent in self.agents}
-        self.captured_evaders = set()  # Clear captured evaders
-
-        # Select a random safe node
-        self.safe_node = self.np_random.choice(list(self.graph.nodes()))
-
-        # Place agents randomly, avoiding overlap if possible
+        self.captured_evaders = set()
         all_nodes = list(self.graph.nodes())
         self.agent_positions = {}
 
         # Place pursuers first
         pursuer_nodes = self.np_random.choice(
-            all_nodes, size=self.num_pursuers, replace=False  # Ensure unique positions
+            all_nodes, size=self.num_pursuers, replace=False
         )
         for i, agent in enumerate(self.pursuers):
-            self.agent_positions[agent] = int(pursuer_nodes[i])  # Use int() for safety
+            self.agent_positions[agent] = int(pursuer_nodes[i])
 
-        # Place evaders, avoiding pursuers and safe node initially
-        remaining_nodes = list(set(all_nodes) - set(pursuer_nodes) - {self.safe_node})
-        if len(remaining_nodes) < self.num_evaders:
-            # Fallback: Allow overlap with pursuers, but still avoid safe node
-            remaining_nodes = list(set(all_nodes) - {self.safe_node})
+        remaining_nodes = list(set(all_nodes) - set(pursuer_nodes))
 
-        # Choose evader nodes from available remaining nodes
+        # Place evaders next
         evader_nodes = self.np_random.choice(
             remaining_nodes,
-            size=min(
-                self.num_evaders, len(remaining_nodes)
-            ),  # Handle insufficient nodes
+            size=min(self.num_evaders, len(remaining_nodes)),
             replace=False,
         )
         for i, agent in enumerate(self.evaders):
-            if i < len(evader_nodes):  # Assign chosen nodes
+            if i < len(evader_nodes):
                 self.agent_positions[agent] = int(evader_nodes[i])
             else:
                 # Extreme fallback: If no nodes left in remaining_nodes (very unlikely)
-                # place randomly on any node except the safe node (may overlap)
                 self.agent_positions[agent] = int(
-                    self.np_random.choice(list(set(all_nodes) - {self.safe_node}))
+                    self.np_random.choice(list(set(all_nodes) - set(pursuer_nodes)))
                 )
+
+        # Choose a safe node that is not occupied by any agent
+        occupied_nodes = set(self.agent_positions.values())
+        available_nodes = list(set(all_nodes) - occupied_nodes)
+        if available_nodes:
+            self.safe_node = self.np_random.choice(available_nodes)
+        else:
+            evader_positions = {self.agent_positions[e] for e in self.evaders}
+            all_nodes_set = set(all_nodes)
+            non_evader_nodes = list(all_nodes_set - evader_positions)
+            if non_evader_nodes:
+                self.safe_node = self.np_random.choice(non_evader_nodes)
+            else:
+                self.safe_node = self.np_random.choice(all_nodes)
 
         # Generate initial observations for all agents
         observations = {agent: self._get_observation(agent) for agent in self.agents}
@@ -270,12 +273,11 @@ class GPE(ParallelEnv):
 
     def _get_observation(self, agent):
         """Generate observation for an agent, including action mask."""
-        position = self.agent_positions[agent]
 
-        # --- Get neighbor info ---
+        position = self.agent_positions[agent]
         neighbors = list(self.graph.neighbors(position))
 
-        # --- Calculate adjacency vector (for observation) ---
+        # Adjacency observation: 1 if neighbor, 0 otherwise, length=num_nodes
         adjacency_obs = np.zeros(self.num_nodes, dtype=np.float32)  # Use float32
         adjacency_obs[neighbors] = 1.0
 
@@ -302,15 +304,13 @@ class GPE(ParallelEnv):
             # Evader observation order: pos, safe, pursuers, evaders, adj, mask
             observation_vector = np.concatenate(
                 [
-                    np.array([float(position)], dtype=np.float32),
-                    np.array(
-                        [float(self.safe_node)], dtype=np.float32
-                    ),  # Include safe_node
+                    np.array([float(position)], dtype=np.float32),  # ego position
                     pursuer_positions,
                     evader_positions,
                     adjacency_obs,
                     action_mask,
-                ]
+                    np.array([float(self.safe_node)], dtype=np.float32),  # safe node
+                ]  # 4*num_nodes
             ).astype(np.float32)
         else:  # Pursuer
             # Pursuer observation order: pos, pursuers, evaders, adj, mask, [padding]
@@ -334,13 +334,11 @@ class GPE(ParallelEnv):
         return observation_vector
 
     def step(self, actions):
-        """Execute actions for all agents and return new observations."""
+        """Execute actions for ---all-- agents and return new observations."""
 
-        # 1. Validate action input: Check if actions provided for all active agents
         active_agents_set = set(self.agents)
         received_actions_set = set(actions.keys())
         if not received_actions_set == active_agents_set:
-            # Provide clearer error message
             missing = active_agents_set - received_actions_set
             extra = received_actions_set - active_agents_set
             error_msg = "Actions mismatch. "
@@ -351,77 +349,56 @@ class GPE(ParallelEnv):
             error_msg += f"Expected actions for: {list(active_agents_set)}."
             raise ValueError(error_msg)
 
-        # 2. Initialize return dictionaries for active agents
         self.rewards = {agent: 0 for agent in self.agents}
         self.terminations = {agent: False for agent in self.agents}
         self.truncations = {agent: False for agent in self.agents}
         self.infos = {agent: {} for agent in self.agents}
 
-        # 3. Process actions for each agent
-        next_positions = self.agent_positions.copy()  # Calculate next positions first
+        next_positions = self.agent_positions.copy()
         for agent, action in actions.items():
-            if agent not in self.agents:  # Safety check
+            if agent not in self.agents:
                 continue
 
             current_position = self.agent_positions[agent]
-
-            # 3a. Apply stochasticity: Agent might stay put with probability p_act
-            if self.np_random.random() > self.p_act:  # Use seeded random generator
-                effective_action = current_position  # Force stay
+            if self.np_random.random() > self.p_act:
+                effective_action = current_position
             else:
-                effective_action = action  # Use agent's chosen action
+                effective_action = action
 
-            # 3b. Check action validity and determine next position
-            # Valid moves: stay or move to a neighbor
             is_valid_move = (
                 effective_action == current_position
                 or effective_action in self.graph.neighbors(current_position)
             )
+            if is_valid_move:
+                next_positions[agent] = effective_action  # Store intended next position
+            else:
+                self.infos[agent]["invalid_action"] = True
 
             if effective_action == current_position:
                 self.rewards[agent] += -self.stay_penalty  # Penalize staying put
 
-            if is_valid_move:
-                next_positions[agent] = effective_action  # Store intended next position
-            else:
-                # Invalid action: record info, position remains unchanged
-                self.infos[agent]["invalid_action"] = True
-
-        # 4. Update all agent positions simultaneously
         self.agent_positions = next_positions
 
-        # 5. Check for captures and safe arrivals based on new positions
+        # !!!Check also before the action!!!
         self._check_captures()
         self._check_safe_arrivals()
+        self._check_termination()  # This method updates self.terminations for all agents
 
-        # 6. Check for game termination conditions (all evaders done)
-        self._check_termination()  # This method updates self.terminations
-
-        # 7. Increment timestep
         self.timestep += 1
 
-        # 8. Check for episode truncation (max steps reached)
         if self.timestep >= self.max_steps:
             for agent in self.agents:
-                # Set truncation only if not already terminated (termination takes precedence)
                 if not self.terminations[agent]:
                     self.truncations[agent] = True
 
-        # 9. Update the list of active agents for the next step
         active_agents_next_step = []
-        for (
-            agent
-        ) in self.agents:  # Iterate through agents active at the start of this step
-            # Keep agent if not terminated AND not truncated in this step
+        for agent in self.agents:
             if not self.terminations[agent] and not self.truncations[agent]:
                 active_agents_next_step.append(agent)
         self.agents = active_agents_next_step  # Update self.agents for the next step's input validation
 
-        # 10. Generate new observations for the agents that took an action this step
-        #     (as required by ParallelEnv step return format)
         observations = {agent: self._get_observation(agent) for agent in actions.keys()}
 
-        # 11. Return standard ParallelEnv step results
         return (
             observations,
             self.rewards,
@@ -484,15 +461,9 @@ class GPE(ParallelEnv):
 
         # Condition: No active evaders left OR all active evaders are at the safe node
         if len(active_evaders) == 0 or evaders_at_safe_node == len(active_evaders):
-            # If game ends, set termination flag for ALL agents currently in self.agents
-            # (This ensures consistency even if some agents terminated earlier individually)
             for agent in self.agents:  # Use the current self.agents list
-                if not self.terminations[
-                    agent
-                ]:  # Avoid overwriting individual terminations? Maybe not needed.
+                if not self.terminations[agent]:
                     self.terminations[agent] = True  # Set global termination
-            # return True # Return value not strictly needed as termination flags are set
-        # return False # Return value not strictly needed
 
     def observation_space(self, agent):
         """Return the observation space for a specific agent."""
@@ -718,7 +689,6 @@ class GPE(ParallelEnv):
                     except nx.NetworkXNoPath:
                         continue
 
-                # 尝试选择一个远离最近追踪者的邻居节点
                 if nearest_pursuer_pos is not None:
                     neighbors = list(self.graph.neighbors(current_pos))
                     best_neighbor = None
