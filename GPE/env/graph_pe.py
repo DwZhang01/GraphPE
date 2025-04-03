@@ -689,6 +689,7 @@ class GPE(ParallelEnv):
                     except nx.NetworkXNoPath:
                         continue
 
+                # Move away from the nearest pursuer
                 if nearest_pursuer_pos is not None:
                     neighbors = list(self.graph.neighbors(current_pos))
                     best_neighbor = None
