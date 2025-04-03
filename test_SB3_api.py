@@ -212,10 +212,8 @@ def visualize_policy(
             # Determine actions for all ACTIVE agents only
             actions = {}
 
-            # 重要：这里确保我们只为当前活跃的智能体生成动作
             for agent in env.agents:  # env.agents 在每一步后都会更新
                 if use_shortest_path:
-                    # 使用最短路径策略
                     if agent.startswith("pursuer"):
                         agent_id = int(agent.split("_")[1])
                         action = env.shortest_path_action("pursuer", agent_id)
@@ -227,13 +225,11 @@ def visualize_policy(
                         if action is not None:  # 确保返回了有效动作
                             actions[agent] = action
                 else:
-                    # 使用训练好的模型策略
                     obs = observations[agent]  # 这里观察空间只会包含活跃智能体
                     obs_array = np.array(obs).reshape(1, -1)
                     action, _ = model.predict(obs_array, deterministic=False)
                     actions[agent] = action.item()
 
-            # 在 step 执行前打印动作信息（可选）
             print(
                 f"Step {step+1}: Active agents: {len(env.agents)}, Actions: {actions}"
             )
