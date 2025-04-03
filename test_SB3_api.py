@@ -170,12 +170,12 @@ class MARLRewardCallback(BaseCallback):
 
 
 def visualize_policy(
-    model,
-    env,
-    num_episodes=3,
+    model=None,
+    env=None,
+    num_episodes=1,
     max_steps=50,
     save_animation=True,
-    use_shortest_path=False,
+    use_shortest_path=True,
 ):
     """
     Visualizes the execution of the trained policy in the provided GPE environment.
