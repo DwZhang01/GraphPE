@@ -625,7 +625,7 @@ class GPE(ParallelEnv):
         if hasattr(self, "fig") and plt.fignum_exists(self.fig.number):
             plt.close(self.fig.number)
 
-    def shortest_path_action(self, agent_type, agent_id):
+    def shortest_path_action(self, agent):
         """
         Args:
             agent_type: "pursuer" or "evader"
@@ -634,13 +634,9 @@ class GPE(ParallelEnv):
         Returns:
             action: Recommended action (node index) for the agent
         """
-        agent_name = f"{agent_type}_{agent_id}"
-        if agent_name not in self.agents:
-            return None
+        current_pos = self.agent_positions[agent]
 
-        current_pos = self.agent_positions[agent_name]
-
-        if agent_type == "pursuer":
+        if agent.startswith("pursuer"):
             min_distance = float("inf")
             target_pos = None
             target_path = None
@@ -664,7 +660,7 @@ class GPE(ParallelEnv):
             if target_path and len(target_path) > 1:
                 return target_path[1]
 
-        elif agent_type == "evader":
+        elif agent.startswith("evader"):
             try:
                 path = nx.shortest_path(self.graph, current_pos, self.safe_node)
                 if len(path) > 1:

@@ -214,16 +214,9 @@ def visualize_policy(
 
             for agent in env.agents:  # env.agents 在每一步后都会更新
                 if use_shortest_path:
-                    if agent.startswith("pursuer"):
-                        agent_id = int(agent.split("_")[1])
-                        action = env.shortest_path_action("pursuer", agent_id)
-                        if action is not None:  # 确保返回了有效动作
-                            actions[agent] = action
-                    elif agent.startswith("evader"):
-                        agent_id = int(agent.split("_")[1])
-                        action = env.shortest_path_action("evader", agent_id)
-                        if action is not None:  # 确保返回了有效动作
-                            actions[agent] = action
+                    action = env.shortest_path_action(agent)
+                    if action is not None:  # 确保返回了有效动作
+                        actions[agent] = action
                 else:
                     obs = observations[agent]  # 这里观察空间只会包含活跃智能体
                     obs_array = np.array(obs).reshape(1, -1)
@@ -240,12 +233,12 @@ def visualize_policy(
             # 在 step 执行后打印状态变化（可选）
             term_agents = [a for a, t in terminations.items() if t]
             trunc_agents = [a for a, t in truncations.items() if t]
-            if term_agents:
-                print(f"  Terminated agents: {term_agents}")
-            if trunc_agents:
-                print(f"  Truncated agents: {trunc_agents}")
-            if "capture" in infos.get(list(infos.keys())[0], {}):
-                print(f"  Capture occurred!")
+            # if term_agents:
+            #     print(f"  Terminated agents: {term_agents}")
+            # if trunc_agents:
+            #     print(f"  Truncated agents: {trunc_agents}")
+            # if "capture" in infos.get(list(infos.keys())[0], {}):
+            #     print(f"  Capture occurred!")
 
             # Render the current state
             env.render()
@@ -298,11 +291,8 @@ def visualize_policy(
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 filename = f"GPE_{timestamp}_episode{episode+1}.gif"
                 filepath = os.path.join(gif_save_dir, filename)
-                # --- 结束新增 ---
-
                 print(f"Saving animation for episode {episode+1} to {filepath}...")
                 imageio.mimsave(filepath, frames, fps=1)  # 使用 frames 创建 GIF
-                # --- 添加完成 ---
                 print(f"Animation saved as {filepath}")
             except ImportError:
                 print("Could not save animation: imageio package not found")
@@ -348,6 +338,8 @@ class DetailedDebugCallback(BaseCallback):
 # Main execution
 if __name__ == "__main__":
     # Environment configuration
+    graph1 = nx.random_geometric_graph(50, 0.2)
+
     env_config = {
         "num_nodes": 50,
         "num_edges": 100,
@@ -368,6 +360,7 @@ if __name__ == "__main__":
     # Create training environment
     training_env = GPE(
         **env_config,
+        graph=graph1,
         render_mode=None,  # No rendering during training
     )
     graph_for_viz = training_env.graph
@@ -404,7 +397,7 @@ if __name__ == "__main__":
     callbacks = CallbackList([reward_callback, capture_debug, detailed_debug])
 
     # 使用组合的回调进行训练
-    model.learn(total_timesteps=200000, callback=callbacks)
+    model.learn(total_timesteps=2000, callback=callbacks)
 
     # Save the policy
     model.save("policy")
