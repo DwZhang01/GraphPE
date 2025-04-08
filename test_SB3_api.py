@@ -15,6 +15,11 @@ import time
 import os
 from datetime import datetime
 
+from torch_geometric.nn import SAGEConv
+
+# aggragation methods: mean, add, max
+
+
 MAX_STEP = 50
 
 
@@ -360,7 +365,7 @@ if __name__ == "__main__":
     # Create training environment
     training_env = GPE(
         **env_config,
-        graph=graph1,
+        # graph=graph1,
         render_mode=None,  # No rendering during training
     )
     graph_for_viz = training_env.graph
