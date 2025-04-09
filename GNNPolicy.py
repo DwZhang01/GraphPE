@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from gymnasium.spaces import Dict
 from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from torch_geometric.nn import (
