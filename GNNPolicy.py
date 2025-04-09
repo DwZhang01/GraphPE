@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
-from gymnasium.spaces import Dict
+from typing import Dict
+from gymnasium.spaces import Dict as GymDict
 from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from torch_geometric.nn import (
@@ -19,7 +20,7 @@ class GNNFeatureExtractor(BaseFeaturesExtractor):
     Assumes observation space is the Dict space defined in GNNEnvWrapper.
     """
 
-    def __init__(self, observation_space: spaces.Dict, features_dim: int = 128):
+    def __init__(self, observation_space: GymDict, features_dim: int = 128):
         super().__init__(observation_space, features_dim=features_dim)
 
         # Extract dimensions from the observation space

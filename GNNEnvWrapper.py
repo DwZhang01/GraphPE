@@ -2,7 +2,8 @@ import gymnasium as gym
 import numpy as np
 import torch
 import networkx as nx
-from gymnasium.spaces import Dict, Box
+from gymnasium.spaces import Box
+from typing import Dict, Any
 from pettingzoo.utils.wrappers import BaseWrapper  # 使用 PettingZoo 的 Wrapper 基类
 from torch_geometric.data import Data
 from torch_geometric.utils import from_networkx
@@ -25,22 +26,20 @@ class GNNEnvWrapper(BaseWrapper):
     def __init__(self, env):
         super().__init__(env)
         self.num_nodes = self.unwrapped.num_nodes
-        self.max_edges = self.num_nodes * self.num_nodes  # Keep simple upper bound
-        # Define feature_dim ONCE
-        self.feature_dim = 8  # [is_safe, is_pursuer, is_evader, is_current, degree, dist_to_safe, dist_to_nearest_pursuer, dist_to_nearest_evader]
+        self.max_edges = self.num_nodes * self.num_nodes
+        self.feature_dim = 8
 
-        # Define the new observation space using self.feature_dim
+        # Define the observation space
         self.observation_space = gym.spaces.Dict(
             {
                 "node_features": Box(
                     low=0,
-                    high=self.num_nodes,  # Max count for pursuer/evader features could exceed 1
-                    shape=(self.num_nodes, self.feature_dim),  # Use self.feature_dim
+                    high=self.num_nodes,
+                    shape=(self.num_nodes, self.feature_dim),
                     dtype=np.float32,
                 ),
                 "edge_index": Box(
                     low=0,
-                    # Max value should be num_nodes for padding, or num_nodes-1 if no padding
                     high=self.num_nodes,
                     shape=(2, self.max_edges),
                     dtype=np.int64,
@@ -53,15 +52,32 @@ class GNNEnvWrapper(BaseWrapper):
                 ),
             }
         )
+
         self.observation_spaces = {
             agent: self.observation_space for agent in self.possible_agents
         }
+
+        # Initialize graph-related attributes
         self._current_graph_pyg = None
+
+        # Reset the environment to ensure we have a valid graph
+        self.env.reset()
+
+        # Now update the PyG graph after we have a valid graph
         self._update_graph_pyg()
 
     def _update_graph_pyg(self):
         """Converts the networkx graph to PyG Data object and extracts edge_index."""
         g_nx = self.unwrapped.graph
+        if g_nx is None:
+            print(
+                "Warning: Graph is None, resetting environment to initialize graph..."
+            )
+            self.env.reset()
+            g_nx = self.unwrapped.graph
+            if g_nx is None:
+                raise ValueError("Could not initialize graph even after reset")
+
         if (
             not all(isinstance(n, int) for n in g_nx.nodes())
             or min(g_nx.nodes()) != 0
