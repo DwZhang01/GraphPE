@@ -29,7 +29,9 @@ class GNNEnvWrapper(BaseWrapper):
         # Infer max edges (can be approximate or exact if graph is fixed)
         # For dynamic graphs per reset, calculate max possible or use a large buffer
         self.max_edges = self.num_nodes * self.num_nodes  # Simplistic upper bound
-        self.feature_dim = 4  # [is_safe, is_pursuer, is_evader, is_current]
+        self.feature_dim = (
+            6  # [is_safe, is_pursuer, is_evader, is_current, degree, distance_to_safe]
+        )
 
         # Define the new observation space for GNN input
         # Note: SB3's default PPO might struggle with Dict space directly in VecEnv.
@@ -111,26 +113,44 @@ class GNNEnvWrapper(BaseWrapper):
         node_features = np.zeros((self.num_nodes, self.feature_dim), dtype=np.float32)
         safe_node = self.unwrapped.safe_node
         agent_positions = self.unwrapped.agent_positions
-        current_agent_pos = agent_positions.get(agent, -1)  # Get current agent pos
+        current_agent_pos = agent_positions.get(agent, -1)
 
-        # 1. Mark safe node
+        # 1. 基础特征标记
         if safe_node is not None and 0 <= safe_node < self.num_nodes:
-            node_features[safe_node, 0] = 1.0
+            node_features[safe_node, 0] = 1.0  # 安全节点
 
-        # 2. Mark pursuer/evader locations
+        # 2. 智能体位置标记
         for other_agent, pos in agent_positions.items():
             if 0 <= pos < self.num_nodes:
                 if other_agent.startswith("pursuer"):
-                    node_features[pos, 1] += 1.0  # Count pursuers at node
+                    node_features[pos, 1] = 1.0  # 追捕者位置
                 elif (
                     other_agent.startswith("evader")
                     and other_agent not in self.unwrapped.captured_evaders
                 ):
-                    node_features[pos, 2] += 1.0  # Count active evaders at node
+                    node_features[pos, 2] = 1.0  # 逃跑者位置
 
-        # 3. Mark current agent's position
+        # 3. 当前智能体位置
         if 0 <= current_agent_pos < self.num_nodes:
             node_features[current_agent_pos, 3] = 1.0
+
+        # 4. 节点度数（归一化）
+        degrees = np.array(
+            [self.unwrapped.graph.degree(n) for n in range(self.num_nodes)]
+        )
+        max_degree = max(degrees) if degrees.size > 0 else 1
+        node_features[:, 4] = degrees / max_degree
+
+        # 5. 到安全节点的距离（归一化）
+        if safe_node is not None:
+            for node in range(self.num_nodes):
+                try:
+                    distance = (
+                        len(nx.shortest_path(self.unwrapped.graph, node, safe_node)) - 1
+                    )
+                    node_features[node, 5] = 1.0 / (distance + 1)  # 归一化距离
+                except nx.NetworkXNoPath:
+                    node_features[node, 5] = 0.0  # 无路径时设为0
 
         return node_features
 

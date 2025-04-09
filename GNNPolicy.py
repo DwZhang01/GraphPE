@@ -19,20 +19,22 @@ class GNNFeatureExtractor(BaseFeaturesExtractor):
     Assumes observation space is the Dict space defined in GNNEnvWrapper.
     """
 
-    def __init__(self, observation_space: spaces.Dict, features_dim: int = 64):
+    def __init__(self, observation_space: spaces.Dict, features_dim: int = 128):
         super().__init__(observation_space, features_dim=features_dim)
 
         # Extract dimensions from the observation space
         node_feature_dim = observation_space["node_features"].shape[1]
-        num_nodes = observation_space["node_features"].shape[0]  # Max nodes
+        hidden_dim = 128
 
         # Define GNN layers (Example: 2 layers of GraphSAGE)
-        self.conv1 = SAGEConv(node_feature_dim, features_dim // 2)
-        self.conv2 = SAGEConv(features_dim // 2, features_dim)
-        # Or use GAT:
-        # self.conv1 = GATv2Conv(node_feature_dim, features_dim // 2, heads=4)
-        # self.conv2 = GATv2Conv(features_dim // 2 * 4, features_dim, heads=1)
+        self.conv1 = GATv2Conv(node_feature_dim, hidden_dim // 4, heads=4)
+        self.conv2 = GATv2Conv(hidden_dim, hidden_dim // 2, heads=2)
+        self.conv3 = GATv2Conv(hidden_dim, features_dim, heads=1)
 
+        self.batch_norm1 = nn.BatchNorm1d(hidden_dim)
+        self.batch_norm2 = nn.BatchNorm1d(hidden_dim)
+
+        self.dropout = nn.Dropout(0.1)
         self.relu = nn.ReLU()
 
         print(f"GNN Feature Extractor Initialized:")
@@ -69,8 +71,16 @@ class GNNFeatureExtractor(BaseFeaturesExtractor):
 
             # --- GNN forward pass ---
             x = self.conv1(x, filtered_ei)
+            x = self.batch_norm1(x)
             x = self.relu(x)
-            x = self.conv2(x, filtered_ei)  # Shape: [num_nodes, features_dim]
+            x = self.dropout(x)
+
+            x = self.conv2(x, filtered_ei)
+            x = self.batch_norm2(x)
+            x = self.relu(x)
+            x = self.dropout(x)
+
+            x = self.conv3(x, filtered_ei)
 
             # Extract the feature vector for the specific agent's node
             agent_feature = x[agent_idx]  # Shape: [features_dim]

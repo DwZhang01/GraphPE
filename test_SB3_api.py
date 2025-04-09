@@ -1,5 +1,8 @@
 import os
 
+from GNNEnvWrapper import GNNEnvWrapper
+from GNNPolicy import GNNFeatureExtractor, GNNPolicy
+
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 import random
@@ -16,6 +19,7 @@ import os
 from datetime import datetime
 
 from torch_geometric.nn import SAGEConv
+import torch
 
 # aggragation methods: mean, add, max
 
@@ -342,57 +346,47 @@ class DetailedDebugCallback(BaseCallback):
 
 # Main execution
 if __name__ == "__main__":
-    # Environment configuration
-    graph1 = nx.random_geometric_graph(50, 0.2)
-
+    # 环境配置
     env_config = {
         "num_nodes": 50,
         "num_edges": 100,
         "num_pursuers": 2,
         "num_evaders": 1,
-        "capture_distance": 1,
-        "required_captors": 1,
-        # "seed": 42,
-        "capture_reward_pursuer": 20.0,
-        "capture_reward_evader": -20.0,
-        "escape_reward_evader": 100.0,
-        "escape_reward_pursuer": -100.0,
-        "stay_penalty": -0.1,
         "max_steps": 50,
         "p_act": 1,
     }
 
-    # Create training environment
-    training_env = GPE(
-        **env_config,
-        # graph=graph1,
-        render_mode=None,  # No rendering during training
-    )
-    graph_for_viz = training_env.graph
+    # 创建基础环境
+    base_env = GPE(**env_config, render_mode=None)
 
-    # Wrap the training environment for Stable Baselines3
-    vec_env = ss.pettingzoo_env_to_vec_env_v1(training_env)
+    # 包装环境以支持 GNN
+    env = GNNEnvWrapper(base_env)
+
+    # 向量化环境
+    vec_env = ss.pettingzoo_env_to_vec_env_v1(env)
     vec_env = ss.concat_vec_envs_v1(
         vec_env, num_vec_envs=1, num_cpus=1, base_class="stable_baselines3"
     )
-    vec_env.reset()
 
-    # Create PPO model
+    # 创建使用 GNN 的 PPO 模型
+    policy_kwargs = {
+        "features_extractor_class": GNNFeatureExtractor,
+        "features_extractor_kwargs": {"features_dim": 128},
+        "net_arch": [dict(pi=[64, 64], vf=[64, 64])],
+    }
+
     model = PPO(
-        MlpPolicy,
+        GNNPolicy,
         vec_env,
-        verbose=1,  # 减少日志输出频率
+        verbose=1,
+        policy_kwargs=policy_kwargs,
+        learning_rate=3e-4,
+        n_steps=2048,
+        batch_size=64,
+        n_epochs=10,
         gamma=0.99,
-        n_steps=256,
-        ent_coef=0.2,
-        learning_rate=0.1,
-        vf_coef=0.05,
-        max_grad_norm=0.9,
-        gae_lambda=0.99,
-        n_epochs=5,
-        clip_range=0.3,
-        batch_size=256,
-        device="cpu",
+        ent_coef=0.01,
+        device="cuda" if torch.cuda.is_available() else "cpu",
     )
 
     # 设置回调
@@ -401,8 +395,8 @@ if __name__ == "__main__":
     detailed_debug = DetailedDebugCallback(verbose=1)
     callbacks = CallbackList([reward_callback, capture_debug, detailed_debug])
 
-    # 使用组合的回调进行训练
-    model.learn(total_timesteps=2000, callback=callbacks)
+    # 训练模型
+    model.learn(total_timesteps=100000, callback=callbacks)
 
     # Save the policy
     model.save("policy")
@@ -430,7 +424,6 @@ if __name__ == "__main__":
     viz_env = GPE(
         **env_config,
         render_mode="human",  # Enable rendering
-        graph=graph_for_viz,
     )
 
     # Visualize the policy execution
