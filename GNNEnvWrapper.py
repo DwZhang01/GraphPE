@@ -28,9 +28,7 @@ class GNNEnvWrapper(BaseWrapper):
         # Infer max edges (can be approximate or exact if graph is fixed)
         # For dynamic graphs per reset, calculate max possible or use a large buffer
         self.max_edges = self.num_nodes * self.num_nodes  # Simplistic upper bound
-        self.feature_dim = (
-            6  # [is_safe, is_pursuer, is_evader, is_current, degree, distance_to_safe]
-        )
+        self.feature_dim = 8  # [is_safe, is_pursuer, is_evader, is_current, degree, dist_to_safe, dist_to_nearest_pursuer, dist_to_nearest_evader]
 
         # Define the new observation space for GNN input
         # Note: SB3's default PPO might struggle with Dict space directly in VecEnv.
@@ -114,6 +112,9 @@ class GNNEnvWrapper(BaseWrapper):
         agent_positions = self.unwrapped.agent_positions
         current_agent_pos = agent_positions.get(agent, -1)
 
+        self.feature_dim = 8
+        node_features = np.zeros((self.num_nodes, self.feature_dim), dtype=np.float32)
+
         # 1. 基础特征标记
         if safe_node is not None and 0 <= safe_node < self.num_nodes:
             node_features[safe_node, 0] = 1.0  # 安全节点
@@ -150,6 +151,35 @@ class GNNEnvWrapper(BaseWrapper):
                     node_features[node, 5] = 1.0 / (distance + 1)  # 归一化距离
                 except nx.NetworkXNoPath:
                     node_features[node, 5] = 0.0  # 无路径时设为0
+
+        # 6. 到最近追捕者和逃跑者的距离（归一化）
+        for node in range(self.num_nodes):
+            min_dist_pursuer = float("inf")
+            min_dist_evader = float("inf")
+            for other_agent, pos in agent_positions.items():
+                if 0 <= pos < self.num_nodes:
+                    try:
+                        dist = (
+                            len(nx.shortest_path(self.unwrapped.graph, node, pos)) - 1
+                        )
+                        if other_agent.startswith("pursuer"):
+                            min_dist_pursuer = min(min_dist_pursuer, dist)
+                        elif (
+                            other_agent.startswith("evader")
+                            and other_agent not in self.unwrapped.captured_evaders
+                        ):
+                            min_dist_evader = min(min_dist_evader, dist)
+                    except nx.NetworkXNoPath:
+                        continue
+
+            node_features[node, 6] = (
+                1.0 / (min_dist_pursuer + 1)
+                if min_dist_pursuer != float("inf")
+                else 0.0
+            )
+            node_features[node, 7] = (
+                1.0 / (min_dist_evader + 1) if min_dist_evader != float("inf") else 0.0
+            )
 
         return node_features
 

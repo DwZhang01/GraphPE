@@ -1,8 +1,5 @@
 import os
 
-from GNNEnvWrapper import GNNEnvWrapper
-from GNNPolicy import GNNFeatureExtractor, GNNPolicy
-
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 import random
@@ -20,6 +17,9 @@ from datetime import datetime
 
 from torch_geometric.nn import SAGEConv
 import torch
+
+from GNNEnvWrapper import GNNEnvWrapper
+from GNNPolicy import GNNFeatureExtractor, GNNPolicy
 
 # aggragation methods: mean, add, max
 
@@ -380,7 +380,7 @@ if __name__ == "__main__":
         vec_env,
         verbose=1,
         policy_kwargs=policy_kwargs,
-        learning_rate=3e-4,
+        learning_rate=0.001,
         n_steps=2048,
         batch_size=64,
         n_epochs=10,
@@ -399,7 +399,7 @@ if __name__ == "__main__":
     model.learn(total_timesteps=100000, callback=callbacks)
 
     # Save the policy
-    model.save("policy")
+    model.save("gnn_policy")
 
     # Plot the reward history
     reward_callback.plot_metrics()
