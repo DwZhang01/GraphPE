@@ -7,8 +7,7 @@ from pettingzoo.utils.wrappers import BaseWrapper  # 使用 PettingZoo 的 Wrapp
 from torch_geometric.data import Data
 from torch_geometric.utils import from_networkx
 
-# 假设 GPE 类定义在 graph_pe.py 中
-# from GPE.env.graph_pe import GPE
+from GPE.env.graph_pe import GPE
 
 
 class GNNEnvWrapper(BaseWrapper):
