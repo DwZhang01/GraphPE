@@ -15,6 +15,21 @@ import time
 import os
 from datetime import datetime
 
+from torch_geometric.nn import SAGEConv
+import torch
+
+from GNNEnvWrapper import GNNEnvWrapper
+from GNNPolicy import GNNFeatureExtractor, GNNPolicy
+
+# Add this import
+from pettingzoo.utils import ParallelEnv
+from gymnasium import (
+    spaces,
+)  # Import spaces for GNNEnvWrapper definition below if needed
+
+# aggragation methods: mean, add, max
+
+
 MAX_STEP = 50
 
 
@@ -337,70 +352,140 @@ class DetailedDebugCallback(BaseCallback):
 
 # Main execution
 if __name__ == "__main__":
-    # Environment configuration
-    # graph1 = nx.random_geometric_graph(50, 0.2)
-
+    # 环境配置
     env_config = {
         "num_nodes": 50,
-        "num_edges": 100,
         "num_pursuers": 2,
         "num_evaders": 1,
-        "capture_distance": 1,
-        "required_captors": 1,
-        # "seed": 42,
+        "max_steps": 50,
+        "p_act": 1,
+        # Add other rewards if necessary
         "capture_reward_pursuer": 20.0,
         "capture_reward_evader": -20.0,
         "escape_reward_evader": 100.0,
         "escape_reward_pursuer": -100.0,
         "stay_penalty": -0.1,
-        "max_steps": 50,
-        "p_act": 1,
     }
 
-    # Create training environment
-    training_env = GPE(
-        **env_config,
-        # graph=graph1,
-        render_mode=None,  # No rendering during training
+    # Use Watts-Strogatz for potentially clearer graph layout
+    n_nodes = env_config["num_nodes"]
+    k_neighbors = 4  # Example: connect to 4 nearest neighbors
+    p_rewire = 0.2  # Example: rewire 20% of edges
+    graph_seed = np.random.randint(10000)
+    base_graph = nx.watts_strogatz_graph(
+        n=n_nodes, k=k_neighbors, p=p_rewire, seed=graph_seed
     )
-    graph_for_viz = training_env.graph
+    if not nx.is_connected(base_graph):
+        largest_cc = max(nx.connected_components(base_graph), key=len)
+        base_graph = base_graph.subgraph(largest_cc).copy()
+        base_graph = nx.convert_node_labels_to_integers(base_graph)
+        print("Warning: Generated graph was not connected, using largest component.")
 
-    # Wrap the training environment for Stable Baselines3
-    vec_env = ss.pettingzoo_env_to_vec_env_v1(training_env)
-    vec_env = ss.concat_vec_envs_v1(
-        vec_env, num_vec_envs=1, num_cpus=1, base_class="stable_baselines3"
-    )
-    vec_env.reset()
+    # Update num_nodes in config if graph changed size
+    env_config["num_nodes"] = base_graph.number_of_nodes()
+    # Add graph to config
+    env_config["graph"] = base_graph
 
-    # Create PPO model
+    # 创建基础环境
+    print("Creating base GPE environment...")
+    base_env = GPE(**env_config, render_mode=None)
+    graph_for_viz = base_env.graph
+    print("Base environment created.")
+
+    # 包装环境以支持 GNN
+    print("Wrapping environment with GNNEnvWrapper...")
+    try:
+        # Pass the base_env instance
+        env = GNNEnvWrapper(base_env)
+        print("GNNEnvWrapper created.")
+        # Verify it looks like a ParallelEnv
+        print(
+            f"Wrapped env agents (initial): {env.agents}"
+        )  # Should be empty before reset
+        print(f"Wrapped env possible_agents: {env.possible_agents}")
+    except Exception as e:
+        print(f"Error creating GNNEnvWrapper: {e}")
+        raise
+
+    # --- Simplified Vectorization - Focus on Supersuit ---
+    print("Attempting PettingZoo vectorization with Supersuit...")
+    try:
+        # Ensure the env passed is the GNNEnvWrapper instance
+        vec_env = ss.pettingzoo_env_to_vec_env_v1(env)
+        print("pettingzoo_env_to_vec_env_v1 successful.")
+        vec_env = ss.concat_vec_envs_v1(
+            vec_env, num_vec_envs=1, num_cpus=1, base_class="stable_baselines3"
+        )
+        print("concat_vec_envs_v1 successful.")
+        print("Vectorization successful using Supersuit.")
+    except Exception as e:
+        print(f"!!! PettingZoo/Supersuit vectorization failed: {e} !!!")
+        print("Ensure GNNEnvWrapper correctly implements the ParallelEnv interface.")
+        # --- REMOVED DummyVecEnv Fallback ---
+        # It's not compatible with PettingZoo environments.
+        raise  # Re-raise the exception to stop execution
+
+    # Reset the vectorized environment
+    print("Resetting vectorized environment...")
+    try:
+        # The observation returned by VecEnv should be a NumPy array (flattened dict)
+        obs = vec_env.reset()
+        print(f"Reset successful.")
+        # Check the type and shape of the observation from the VecEnv
+        if isinstance(obs, np.ndarray):
+            print(f"Observation shape after reset: {obs.shape}")
+        else:
+            print(f"Observation type after reset: {type(obs)}")
+            # If it's still a dict, concat_vec_envs might not have flattened it correctly
+            # Or the base_class='stable_baselines3' might need Dict support in SB3 PPO.
+    except Exception as e:
+        print(f"Error resetting vectorized environment: {e}")
+        raise
+
+    # 创建使用 GNN 的 PPO 模型
+    policy_kwargs = {
+        "features_extractor_class": GNNFeatureExtractor,
+        "features_extractor_kwargs": {"features_dim": 128},
+        "net_arch": [dict(pi=[64, 64], vf=[64, 64])],
+    }
+
+    # 确保设备配置正确
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Using device: {device}")
+
     model = PPO(
-        MlpPolicy,
+        GNNPolicy,
         vec_env,
-        verbose=1,  # 减少日志输出频率
+        verbose=1,
+        policy_kwargs=policy_kwargs,
+        learning_rate=3e-4,
+        n_steps=2048,
+        batch_size=64,
+        n_epochs=10,
         gamma=0.99,
-        n_steps=256,
-        ent_coef=0.2,
-        learning_rate=0.1,
-        vf_coef=0.05,
-        max_grad_norm=0.9,
-        gae_lambda=0.99,
-        n_epochs=5,
-        clip_range=0.3,
-        batch_size=256,
-        device="cpu",
+        ent_coef=0.01,
+        gae_lambda=0.95,
+        clip_range=0.2,
+        device=device,
     )
 
     # 设置回调
-    reward_callback = MARLRewardCallback(num_pursuers=2, num_evaders=1)
+    reward_callback = MARLRewardCallback(
+        num_pursuers=env_config["num_pursuers"], num_evaders=env_config["num_evaders"]
+    )
     capture_debug = CaptureDebugCallback(verbose=1)
     detailed_debug = DetailedDebugCallback(verbose=1)
     callbacks = CallbackList([reward_callback, capture_debug, detailed_debug])
 
-    # 使用组合的回调进行训练
-    model.learn(total_timesteps=2000, callback=callbacks)
+    # 训练模型
+    print(f"Starting GNN PPO training on device: {model.device}")
+    model.learn(total_timesteps=100000, callback=callbacks)  # Increased timesteps
+    print("Training finished.")
 
     # Save the policy
-    model.save("policy")
+    model_save_path = "gnn_policy"
+    model.save(model_save_path)
+    print(f"Model saved to {model_save_path}.zip")
 
     # Plot the reward history
     reward_callback.plot_metrics()
@@ -408,39 +493,67 @@ if __name__ == "__main__":
     # Close the training environment
     vec_env.close()
 
-    # --- 添加加载模型的代码 ---
-    print("Loading pre-trained model from 'policy.zip'...")
-    # 假设模型保存在 "policy.zip" (如果文件名不同请修改)
-    model_path = "policy.zip"
-    if not os.path.exists(model_path):
-        print(f"Error: Model file not found at {model_path}")
-        print("Please ensure the model was saved correctly after training.")
-        exit()  # 或者抛出异常
-    # 加载模型时不需要环境，但可视化时需要
-    model = PPO.load(model_path)
-    print("Model loaded successfully.")
+    # --- 加载 GNN 模型 ---
+    model_path_load = f"{model_save_path}.zip"  # Use the correct saved model name
+    print(f"Loading pre-trained model from '{model_path_load}'...")
 
-    # Create a visualization environment (separate from training env)
-    # This needs to be a direct GPE instance with human rendering enabled
-    viz_env = GPE(
+    if not os.path.exists(model_path_load):
+        print(f"Error: Model file not found at {model_path_load}")
+        exit()
+
+    # IMPORTANT: When loading a model with custom policy/features,
+    # specify custom_objects including the policy class and potentially the wrapper.
+    # However, for SB3 PPO, usually just loading works if policy is registered,
+    # but let's load with the policy specified for safety.
+    # We need an env instance with the correct obs space for loading,
+    # but SB3 load() often handles this if policy is known.
+    # If loading fails, you might need to pass `custom_objects={'policy_class': GNNPolicy}`
+    try:
+        # Provide the policy class during loading if necessary
+        # For VecEnvs with Dict obs space, SB3 load might need help.
+        # Let's try without env first, it often works.
+        loaded_model = PPO.load(model_path_load, device=model.device, policy=GNNPolicy)
+        # If the above fails, try passing a dummy env with the correct spaces:
+        # dummy_env = GNNEnvWrapper(GPE(**env_config))
+        # dummy_vec_env = ss.pettingzoo_env_to_vec_env_v1(dummy_env)
+        # loaded_model = PPO.load(model_path_load, env=dummy_vec_env, device=model.device, custom_objects={'policy_class': GNNPolicy})
+        print("Model loaded successfully.")
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        print("Try ensuring the GNNPolicy class is available in the scope during load.")
+        exit()
+
+    # --- 可视化 ---
+    # Option 1: Visualize using shortest path (doesn't test GNN model)
+    print("\nVisualizing using shortest path (not the trained GNN policy)...")
+    viz_env_base = GPE(
         **env_config,
-        render_mode="human",  # Enable rendering
-        graph=graph_for_viz,
+        render_mode="human",
+        graph=graph_for_viz,  # Use the same graph as training
     )
-
-    # Visualize the policy execution
-    print("\nVisualizing trained policy...")
     visualize_policy(
-        model,
-        viz_env,
+        model=None,  # Don't pass model if using shortest path
+        env=viz_env_base,
         num_episodes=3,
         max_steps=MAX_STEP,
-        save_animation=True,  # 启用动画保存
-        use_shortest_path=True,  # 添加这个参数，测试最短路径移动
+        save_animation=True,
+        use_shortest_path=True,  # Force shortest path
     )
+    viz_env_base.close()
 
-    # Close the visualization environment
-    viz_env.close()
+    # Option 2: Visualize using the loaded GNN model (Requires wrapped env for predict)
+    # print("\nVisualizing trained GNN policy...")
+    # # We need to wrap the visualization env for the model's predict step
+    # viz_env_base_for_gnn = GPE(
+    #     **env_config,
+    #     render_mode="human", # Keep human render mode
+    #     graph=graph_for_viz,
+    # )
+    # viz_env_wrapped = GNNEnvWrapper(viz_env_base_for_gnn) # Wrap for observation
+    # # Modify visualize_policy to accept the wrapped env for predictions
+    # # OR create a temporary wrapped env inside visualize_policy when needed
+    # # visualize_policy_gnn(loaded_model, viz_env_wrapped, ...) # Needs modification in visualize_policy
+    # print("GNN Policy Visualization requires modifications to visualize_policy function - Skipped.")
 
     # 打印训练摘要
     metrics = reward_callback.get_metrics_summary()
