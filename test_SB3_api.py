@@ -21,6 +21,12 @@ import torch
 from GNNEnvWrapper import GNNEnvWrapper
 from GNNPolicy import GNNFeatureExtractor, GNNPolicy
 
+# Add this import
+from pettingzoo.utils import ParallelEnv
+from gymnasium import (
+    spaces,
+)  # Import spaces for GNNEnvWrapper definition below if needed
+
 # aggragation methods: mean, add, max
 
 
@@ -381,42 +387,86 @@ if __name__ == "__main__":
     env_config["graph"] = base_graph
 
     # 创建基础环境
-    # Pass the generated graph here
+    print("Creating base GPE environment...")
     base_env = GPE(**env_config, render_mode=None)
-    graph_for_viz = base_env.graph  # Store the graph used for training
+    graph_for_viz = base_env.graph
+    print("Base environment created.")
 
     # 包装环境以支持 GNN
-    env = GNNEnvWrapper(base_env)
+    print("Wrapping environment with GNNEnvWrapper...")
+    try:
+        # Pass the base_env instance
+        env = GNNEnvWrapper(base_env)
+        print("GNNEnvWrapper created.")
+        # Verify it looks like a ParallelEnv
+        print(
+            f"Wrapped env agents (initial): {env.agents}"
+        )  # Should be empty before reset
+        print(f"Wrapped env possible_agents: {env.possible_agents}")
+    except Exception as e:
+        print(f"Error creating GNNEnvWrapper: {e}")
+        raise
 
-    # 向量化环境
-    vec_env = ss.pettingzoo_env_to_vec_env_v1(env)
-    vec_env = ss.concat_vec_envs_v1(
-        vec_env, num_vec_envs=1, num_cpus=1, base_class="stable_baselines3"
-    )
-    vec_env.reset()  # Reset after wrapping
+    # --- Simplified Vectorization - Focus on Supersuit ---
+    print("Attempting PettingZoo vectorization with Supersuit...")
+    try:
+        # Ensure the env passed is the GNNEnvWrapper instance
+        vec_env = ss.pettingzoo_env_to_vec_env_v1(env)
+        print("pettingzoo_env_to_vec_env_v1 successful.")
+        vec_env = ss.concat_vec_envs_v1(
+            vec_env, num_vec_envs=1, num_cpus=1, base_class="stable_baselines3"
+        )
+        print("concat_vec_envs_v1 successful.")
+        print("Vectorization successful using Supersuit.")
+    except Exception as e:
+        print(f"!!! PettingZoo/Supersuit vectorization failed: {e} !!!")
+        print("Ensure GNNEnvWrapper correctly implements the ParallelEnv interface.")
+        # --- REMOVED DummyVecEnv Fallback ---
+        # It's not compatible with PettingZoo environments.
+        raise  # Re-raise the exception to stop execution
+
+    # Reset the vectorized environment
+    print("Resetting vectorized environment...")
+    try:
+        # The observation returned by VecEnv should be a NumPy array (flattened dict)
+        obs = vec_env.reset()
+        print(f"Reset successful.")
+        # Check the type and shape of the observation from the VecEnv
+        if isinstance(obs, np.ndarray):
+            print(f"Observation shape after reset: {obs.shape}")
+        else:
+            print(f"Observation type after reset: {type(obs)}")
+            # If it's still a dict, concat_vec_envs might not have flattened it correctly
+            # Or the base_class='stable_baselines3' might need Dict support in SB3 PPO.
+    except Exception as e:
+        print(f"Error resetting vectorized environment: {e}")
+        raise
 
     # 创建使用 GNN 的 PPO 模型
     policy_kwargs = {
-        # Ensure features_dim matches the one defined in GNNPolicy init
         "features_extractor_class": GNNFeatureExtractor,
         "features_extractor_kwargs": {"features_dim": 128},
-        "net_arch": [dict(pi=[64, 64], vf=[64, 64])],  # MLP head architecture
+        "net_arch": [dict(pi=[64, 64], vf=[64, 64])],
     }
 
+    # 确保设备配置正确
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Using device: {device}")
+
     model = PPO(
-        GNNPolicy,  # Use the custom GNN policy
+        GNNPolicy,
         vec_env,
         verbose=1,
         policy_kwargs=policy_kwargs,
-        learning_rate=3e-4,  # Common starting LR for PPO
-        n_steps=2048,  # Steps per env per update
-        batch_size=64,  # Minibatch size
-        n_epochs=10,  # Passes over collected data
-        gamma=0.99,  # Discount factor
-        ent_coef=0.01,  # Entropy coefficient
-        gae_lambda=0.95,  # GAE parameter
-        clip_range=0.2,  # PPO clipping
-        device="cuda" if torch.cuda.is_available() else "cpu",
+        learning_rate=3e-4,
+        n_steps=2048,
+        batch_size=64,
+        n_epochs=10,
+        gamma=0.99,
+        ent_coef=0.01,
+        gae_lambda=0.95,
+        clip_range=0.2,
+        device=device,
     )
 
     # 设置回调
