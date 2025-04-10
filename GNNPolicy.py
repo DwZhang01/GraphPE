@@ -47,7 +47,9 @@ class GNNFeatureExtractor(BaseFeaturesExtractor):
     def forward(self, observations: Dict[str, torch.Tensor]) -> torch.Tensor:
         node_features = observations["node_features"]  # [batch, num_nodes, feat_dim]
         edge_index = observations["edge_index"]  # [batch, 2, max_edges]
-        agent_node_idx = observations["agent_node_index"]  # [batch, 1]
+        agent_node_idx = observations[
+            "agent_node_index"
+        ]  # [batch, 1] <= Likely float32 here
 
         batch_size = node_features.shape[0]
         device = node_features.device
@@ -57,7 +59,12 @@ class GNNFeatureExtractor(BaseFeaturesExtractor):
         for i in range(batch_size):
             x_i = node_features[i]  # [num_nodes, feat_dim]
             edge_index_i = edge_index[i]  # [2, max_edges]
-            agent_idx_i = agent_node_idx[i].item()  # scalar agent node index
+            agent_idx_i = int(
+                agent_node_idx[i].item()
+            )  # scalar agent node index, ensure integer
+
+            # Explicitly cast edge_index to long
+            edge_index_i = edge_index_i.long()
 
             # Filter out padded edges for this specific graph instance
             # Assuming padding value is >= num_nodes
@@ -93,9 +100,12 @@ class GNNFeatureExtractor(BaseFeaturesExtractor):
             # Extract the feature for the agent's node
             # Handle case where agent_idx might be invalid (e.g., -1 if agent not present)
             if 0 <= agent_idx_i < self.num_nodes:
-                agent_feature = x[agent_idx_i]  # [features_dim]
+                agent_feature = x[
+                    agent_idx_i
+                ]  # [features_dim] # Indexing now uses integer
             else:
                 # Handle invalid index - perhaps return zeros?
+                # Ensure the created zero tensor matches the expected features_dim
                 agent_feature = torch.zeros(self.features_dim, device=device)
                 print(
                     f"Warning: Invalid agent_node_idx {agent_idx_i} encountered in batch item {i}."
