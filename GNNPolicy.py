@@ -40,11 +40,17 @@ class GNNFeatureExtractor(BaseFeaturesExtractor):
         self.dropout = nn.Dropout(0.1)
         self.relu = nn.ReLU()
 
+        # {{ edit_1: Add attribute to store last observations }}
+        self.last_obs = None
+
         print(f"GNN Feature Extractor Initialized:")
         print(f"  Input node feature dim: {node_feature_dim}")
         print(f"  Output features dim (shared network): {features_dim}")
 
     def forward(self, observations: Dict[str, torch.Tensor]) -> torch.Tensor:
+        # {{ edit_2: Store observations before processing }}
+        self.last_obs = observations
+
         node_features = observations["node_features"]  # [batch, num_nodes, feat_dim]
         edge_index = observations["edge_index"]  # [batch, 2, max_edges]
         agent_node_idx = observations[
@@ -152,16 +158,37 @@ class GNNPolicy(ActorCriticPolicy):
         )
 
     def _get_action_dist_from_latent(self, latent_pi, latent_sde=None):
-        mean_actions = self.action_net(latent_pi)  # [batch_size, action_dim]
-        # Check if _last_obs exists and is the expected dictionary format
+        mean_actions = self.action_net(latent_pi)  # Shape [batch_size, num_nodes]
+
+        # {{ edit_4_start: Get masks from features_extractor }}
+        # Check if the features extractor and its stored obs are available
         if (
-            hasattr(self, "_last_obs")
-            and isinstance(self._last_obs, dict)
-            and "action_mask" in self._last_obs
+            hasattr(self, "features_extractor")
+            and hasattr(self.features_extractor, "last_obs")
+            and self.features_extractor.last_obs is not None
+            and isinstance(self.features_extractor.last_obs, dict)
+            and "action_mask" in self.features_extractor.last_obs
         ):
-            action_masks = self._last_obs["action_mask"]  # [batch_size, num_nodes]
-            # Ensure mask is on the same device
+            # Retrieve the action masks corresponding to the latent_pi batch
+            action_masks = self.features_extractor.last_obs[
+                "action_mask"
+            ]  # Shape [batch_size, num_nodes]
+
+            # Ensure mask is on the same device and has the correct batch size
             action_masks = action_masks.to(mean_actions.device)
+
+            # --- Crucial Check: Compare batch sizes ---
+            if action_masks.shape[0] != mean_actions.shape[0]:
+                print(
+                    f"Warning: Action mask batch size ({action_masks.shape[0]}) does not match "
+                    f"latent_pi batch size ({mean_actions.shape[0]}) in _get_action_dist_from_latent. "
+                    "Using unmasked actions."
+                )
+                # Fallback to unmasked actions if sizes mismatch unexpectedly
+                return self.action_dist.proba_distribution(action_logits=mean_actions)
+            # --- End Check ---
+
+            # Apply the mask
             masked_logits = torch.where(
                 action_masks > 0,
                 mean_actions,
@@ -169,16 +196,9 @@ class GNNPolicy(ActorCriticPolicy):
             )
             return self.action_dist.proba_distribution(action_logits=masked_logits)
         else:
-            # Optional: Add a warning if mask is expected but not found
-            # print("Warning: Action mask not found or _last_obs is not valid in GNNPolicy.")
-            pass  # Fallback to using raw logits if no mask available
-
-        return self.action_dist.proba_distribution(action_logits=mean_actions)
-
-    def forward(self, obs: Dict[str, torch.Tensor], deterministic: bool = False):
-        """
-        Need to store the observation for action masking in _get_action_dist_from_latent.
-        """
-        # Store the observation before calling the parent's forward method
-        self._last_obs = obs
-        return super().forward(obs, deterministic)
+            # Fallback if mask isn't available for some reason
+            print(
+                "Warning: Action mask not found in features_extractor.last_obs. Using unmasked actions."
+            )
+            return self.action_dist.proba_distribution(action_logits=mean_actions)
+        # {{ edit_4_end }}
