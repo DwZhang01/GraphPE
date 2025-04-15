@@ -125,6 +125,21 @@ class GPE(ParallelEnv):
         self.escape_reward_pursuer = escape_reward_pursuer
         self.stay_penalty = stay_penalty
 
+    # TODO: Based on the document, it should be defined as observation_space/action_space with return Discrete(..)
+    # Observation space should be defined here.
+    # lru_cache allows observation and action spaces to be memoized, reducing clock cycles required to get each agent's space.
+    # If your spaces change over time, remove this line (disable caching).
+    # @functools.lru_cache(maxsize=None)
+    # def observation_space(self, agent):
+    #     # gymnasium spaces are defined and documented here: https://gymnasium.farama.org/api/spaces/
+    #     return Discrete(4)
+
+    # # Action space should be defined here.
+    # # If your spaces change over time, remove this line (disable caching).
+    # @functools.lru_cache(maxsize=None)
+    # def action_space(self, agent):
+    #     return Discrete(3)
+
     def _initialize_spaces(self):
         """Initialize action and observation spaces for all agents."""
         # Action space: Choose any node as target (validity checked in step)
@@ -157,7 +172,10 @@ class GPE(ParallelEnv):
         # Note: The bounds need to accommodate all possible values (-1 to num_nodes-1 for positions)
         self.observation_spaces = {
             agent: Box(
-                low=-1, high=self.num_nodes, shape=(flat_obs_size,), dtype=np.float32
+                low=-1,
+                high=self.num_nodes,
+                shape=(flat_obs_size,),
+                dtype=np.float32,  # check dtype
             )  # Use float32 for SB3 compatibility
             for agent in self.possible_agents
         }
