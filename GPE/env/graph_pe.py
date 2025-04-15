@@ -457,14 +457,22 @@ class GPE(ParallelEnv):
     def _check_safe_arrivals(self):
         """Check if any evaders have reached the safe node."""
         for evader in self.evaders:
+            # Skip if already captured
             if evader in self.captured_evaders:
                 continue
 
+            # Check if the evader is at the safe node
             if self.agent_positions[evader] == self.safe_node:
-                self.rewards[evader] += self.escape_reward_evader
-                self.terminations[evader] = True
-                for pursuer in self.pursuers:
-                    self.rewards[pursuer] += self.escape_reward_pursuer
+                # Only update rewards/terminations if the agent was active at the start of this step
+                # (i.e., present in the self.rewards dictionary keys)
+                if evader in self.rewards:
+                    self.rewards[evader] += self.escape_reward_evader
+                    self.terminations[evader] = True
+                    # Assign negative reward to pursuers active in this step
+                    for pursuer in self.pursuers:
+                        # Check if the pursuer is also active in this step before assigning reward
+                        if pursuer in self.rewards:
+                            self.rewards[pursuer] += self.escape_reward_pursuer
 
     def _check_termination(self):
         """Check if the overall game should terminate."""
