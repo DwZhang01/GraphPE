@@ -25,11 +25,10 @@ class GNNFeatureExtractor(BaseFeaturesExtractor):
 
         # Extract dimensions from the observation space
         node_feature_dim = observation_space["node_features"].shape[1]
-        # Store num_nodes needed for edge filtering
         self.num_nodes = observation_space["node_features"].shape[0]
         hidden_dim = 128
 
-        # Define GNN layers (Example: 2 layers of GraphSAGE) Multihead attention
+        # Define GNN layers (Example: 3 layers of GATv2)
         self.conv1 = GATv2Conv(node_feature_dim, hidden_dim // 4, heads=4)
         self.conv2 = GATv2Conv(hidden_dim, hidden_dim // 2, heads=2)
         self.conv3 = GATv2Conv(hidden_dim, features_dim, heads=1)
@@ -40,7 +39,6 @@ class GNNFeatureExtractor(BaseFeaturesExtractor):
         self.dropout = nn.Dropout(0.1)
         self.relu = nn.ReLU()
 
-        # {{ edit_1: Add attribute to store last observations }}
         self.last_obs = None
 
         print(f"GNN Feature Extractor Initialized:")
@@ -48,7 +46,6 @@ class GNNFeatureExtractor(BaseFeaturesExtractor):
         print(f"  Output features dim (shared network): {features_dim}")
 
     def forward(self, observations: Dict[str, torch.Tensor]) -> torch.Tensor:
-        # {{ edit_2: Store observations before processing }}
         self.last_obs = observations
 
         node_features = observations["node_features"]  # [batch, num_nodes, feat_dim]

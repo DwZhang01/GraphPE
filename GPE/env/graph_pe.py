@@ -82,13 +82,24 @@ class GPE(ParallelEnv):
             escape_reward_pursuer: Reward for pursuers when evader reaches safe node.
         """
         super().__init__()
-        # Set random seed
         self.np_random = np.random.RandomState(seed)
-
         self.p_act = p_act
-        # Environment parameters
-        self.num_nodes = num_nodes
-        self.num_edges = num_edges
+
+        self.custom_graph = graph
+        if self.custom_graph is None:
+            m = int(np.floor(np.sqrt(num_nodes)))
+            n = int(np.ceil(num_nodes / m))
+            actual_num_nodes = m * n
+            self.num_nodes = actual_num_nodes
+            print(
+                f"GPE Init: Grid graph detected. Actual num_nodes set to {self.num_nodes}"
+            )
+        else:
+            self.num_nodes = self.custom_graph.number_of_nodes()
+            print(
+                f"GPE Init: Custom graph provided. Actual num_nodes set to {self.num_nodes}"
+            )
+
         self.num_pursuers = num_pursuers
         self.num_evaders = num_evaders
         self.capture_distance = capture_distance
@@ -96,23 +107,17 @@ class GPE(ParallelEnv):
         self.max_steps = max_steps
         self.render_mode = render_mode
 
-        # Create agent lists
         self.pursuers = [f"pursuer_{i}" for i in range(self.num_pursuers)]
         self.evaders = [f"evader_{i}" for i in range(self.num_evaders)]
         self.possible_agents = self.pursuers + self.evaders
 
-        # Graph structure (optional custom graph)
-        self.custom_graph = graph
-
-        # Initialize action and observation spaces
         self._initialize_spaces()
 
-        # State variables initialized in reset()
         self.graph = None
         self.safe_node = None
         self.agent_positions = {}
         self.timestep = 0
-        self.agents = []  # List of currently active agents
+        self.agents = []
         self.rewards = None
         self.terminations = None
         self.truncations = None
@@ -125,31 +130,12 @@ class GPE(ParallelEnv):
         self.escape_reward_pursuer = escape_reward_pursuer
         self.stay_penalty = stay_penalty
 
-    # TODO: Based on the document, it should be defined as observation_space/action_space with return Discrete(..)
-    # Observation space should be defined here.
-    # lru_cache allows observation and action spaces to be memoized, reducing clock cycles required to get each agent's space.
-    # If your spaces change over time, remove this line (disable caching).
-    # @functools.lru_cache(maxsize=None)
-    # def observation_space(self, agent):
-    #     # gymnasium spaces are defined and documented here: https://gymnasium.farama.org/api/spaces/
-    #     return Discrete(4)
-
-    # # Action space should be defined here.
-    # # If your spaces change over time, remove this line (disable caching).
-    # @functools.lru_cache(maxsize=None)
-    # def action_space(self, agent):
-    #     return Discrete(3)
-
     def _initialize_spaces(self):
         """Initialize action and observation spaces for all agents."""
-        # Action space: Choose any node as target (validity checked in step)
         self.action_spaces = {
             agent: Discrete(self.num_nodes) for agent in self.possible_agents
         }
 
-        # Observation space: Define a flat Box space for all agents
-        # Calculate the size needed for the flattened observation vector.
-        # Ensure pursuers and evaders have the same final size by padding.
         pursuer_obs_size = (
             1  # position
             + self.num_pursuers  # pursuers positions
@@ -165,22 +151,17 @@ class GPE(ParallelEnv):
             + self.num_nodes
             + self.num_nodes
         )
-        # Use the maximum size for both, we will pad pursuers' observations
         flat_obs_size = max(pursuer_obs_size, evader_obs_size)
 
-        # Define the observation space as a single Box for all agents
-        # Note: The bounds need to accommodate all possible values (-1 to num_nodes-1 for positions)
         self.observation_spaces = {
             agent: Box(
                 low=-1,
                 high=self.num_nodes,
                 shape=(flat_obs_size,),
-                dtype=np.float32,  # check dtype
-            )  # Use float32 for SB3 compatibility
+                dtype=np.float32,
+            )
             for agent in self.possible_agents
         }
-        # Total Size : n^2m^2
-        # Store component sizes for easy concatenation later (optional but helpful)
         self._pursuer_padding_size = flat_obs_size - pursuer_obs_size
 
     def _generate_graph(self):
@@ -201,44 +182,9 @@ class GPE(ParallelEnv):
 
         return graph
 
-        # Generate random graph (Erdős-Rényi model)
-        # Edge probability p calculated for approximate num_edges
-        # p = 2 * self.num_edges / (self.num_nodes * (self.num_nodes - 1))
-        # graph = nx.gnp_random_graph(
-        #     self.num_nodes, p, seed=self.np_random.randint(10000)
-        # )
-
-        # Ensure the graph is connected
-        # if not nx.is_connected(graph):
-        #     # Take the largest connected component
-        #     largest_cc = max(nx.connected_components(graph), key=len)
-        #     graph = graph.subgraph(largest_cc).copy()  # Work with the largest component
-
-        #     # Add random edges between remaining components to connect them
-        #     nodes = list(graph.nodes())  # Get nodes of the current subgraph
-        #     components = list(nx.connected_components(graph))
-
-        #     while len(components) > 1:
-        #         # Pick two random components
-        #         comp1 = random.choice(components)
-        #         components.remove(comp1)
-        #         comp2 = random.choice(components)
-        #         # components.remove(comp2) # Bug fix: Don't remove the second component yet
-
-        #         # Pick one random node from each component and add an edge
-        #         node1 = random.choice(list(comp1))
-        #         node2 = random.choice(list(comp2))
-        #         graph.add_edge(node1, node2)
-
-        #         # Recalculate components after adding edge
-        #         components = list(nx.connected_components(graph))
-
-        # return graph
-
     def reset(self, seed=None, options=None):
-        """Reset the environment and return initial observations."""
+        """Reset the environment ensuring pursuers and evaders are not adjacent initially."""
 
-        # Reset random seed if provided
         if seed is not None:
             self.np_random = np.random.RandomState(seed)
 
@@ -253,43 +199,72 @@ class GPE(ParallelEnv):
         all_nodes = list(self.graph.nodes())
         self.agent_positions = {}
 
-        # Place pursuers first
+        # 1. Place Pursuers
+        if self.num_pursuers > len(all_nodes):
+            raise ValueError(
+                f"Cannot place {self.num_pursuers} pursuers on a graph with {len(all_nodes)} nodes."
+            )
         pursuer_nodes = self.np_random.choice(
             all_nodes, size=self.num_pursuers, replace=False
         )
         for i, agent in enumerate(self.pursuers):
             self.agent_positions[agent] = int(pursuer_nodes[i])
 
-        remaining_nodes = list(set(all_nodes) - set(pursuer_nodes))
-
-        # Place evaders next
-        evader_nodes = self.np_random.choice(
-            remaining_nodes,
-            size=min(self.num_evaders, len(remaining_nodes)),
-            replace=False,
-        )
-        for i, agent in enumerate(self.evaders):
-            if i < len(evader_nodes):
-                self.agent_positions[agent] = int(evader_nodes[i])
-            else:
-                # Extreme fallback: If no nodes left in remaining_nodes (very unlikely)
-                self.agent_positions[agent] = int(
-                    self.np_random.choice(list(set(all_nodes) - set(pursuer_nodes)))
+        # 2. Determine Danger Zone (pursuer nodes + their neighbors)
+        danger_zone = set(pursuer_nodes)
+        for p_node in pursuer_nodes:
+            # Add neighbors to the danger zone
+            try:
+                neighbors = set(self.graph.neighbors(p_node))
+                danger_zone.update(neighbors)
+            except (
+                nx.NetworkXError
+            ):  # Handle potential errors if node somehow not in graph
+                print(
+                    f"Warning: Pursuer node {p_node} not found in graph during danger zone calculation."
                 )
 
-        # Choose a safe node that is not occupied by any agent
+        # 3. Determine Safe Zone for Evaders
+        all_nodes_set = set(all_nodes)
+        safe_zone_for_evaders = list(all_nodes_set - danger_zone)
+
+        # 4. Check if Safe Zone is large enough
+        if len(safe_zone_for_evaders) < self.num_evaders:
+            raise ValueError(
+                f"Could not find enough safe starting positions for evaders. "
+                f"Safe zone size: {len(safe_zone_for_evaders)}, Evaders needed: {self.num_evaders}. "
+                f"Consider reducing agent numbers or using a larger/sparser graph."
+            )
+
+        # 5. Place Evaders in the Safe Zone
+        evader_nodes = self.np_random.choice(
+            safe_zone_for_evaders, size=self.num_evaders, replace=False
+        )
+        for i, agent in enumerate(self.evaders):
+            self.agent_positions[agent] = int(evader_nodes[i])
+
+        # Choose a safe node (must not be occupied by any agent)
         occupied_nodes = set(self.agent_positions.values())
-        available_nodes = list(set(all_nodes) - occupied_nodes)
-        if available_nodes:
-            self.safe_node = self.np_random.choice(available_nodes)
+        available_nodes_for_safe_node = list(all_nodes_set - occupied_nodes)
+        if available_nodes_for_safe_node:
+            self.safe_node = self.np_random.choice(available_nodes_for_safe_node)
         else:
-            evader_positions = {self.agent_positions[e] for e in self.evaders}
-            all_nodes_set = set(all_nodes)
-            non_evader_nodes = list(all_nodes_set - evader_positions)
-            if non_evader_nodes:
-                self.safe_node = self.np_random.choice(non_evader_nodes)
-            else:
-                self.safe_node = self.np_random.choice(all_nodes)
+            # Fallback: Should be very rare now, but try placing on an evader spot
+            # as pursuers are guaranteed not to be there initially.
+            if evader_nodes.size > 0:
+                self.safe_node = self.np_random.choice(evader_nodes)
+                print(
+                    "Warning: No unoccupied node found for safe node. Placing on an evader's start position."
+                )
+            else:  # If no evaders, place randomly amongst non-pursuer nodes.
+                non_pursuer_nodes = list(all_nodes_set - set(pursuer_nodes))
+                if non_pursuer_nodes:
+                    self.safe_node = self.np_random.choice(non_pursuer_nodes)
+                else:  # Should be impossible if graph has nodes
+                    self.safe_node = self.np_random.choice(all_nodes)
+                    print(
+                        "Warning: Highly unusual scenario. Placing safe node randomly."
+                    )
 
         # Generate initial observations for all agents
         observations = {agent: self._get_observation(agent) for agent in self.agents}
@@ -303,43 +278,37 @@ class GPE(ParallelEnv):
         position = self.agent_positions[agent]
         neighbors = list(self.graph.neighbors(position))
 
-        # Adjacency observation: 1 if neighbor, 0 otherwise, length=num_nodes
-        adjacency_obs = np.zeros(self.num_nodes, dtype=np.float32)  # Use float32
+        adjacency_obs = np.zeros(self.num_nodes, dtype=np.float32)
         adjacency_obs[neighbors] = 1.0
 
-        # Get agent positions
         pursuer_positions = np.array(
             [self.agent_positions[p] for p in self.pursuers],
-            dtype=np.float32,  # Use float32
+            dtype=np.float32,
         )
         evader_positions = np.array(
-            [  # Use -1.0 for captured evaders
+            [
                 self.agent_positions[e] if e not in self.captured_evaders else -1.0
                 for e in self.evaders
             ],
-            dtype=np.float32,  # Use float32
+            dtype=np.float32,
         )
 
-        # Calculate action mask
-        action_mask = np.zeros(self.num_nodes, dtype=np.float32)  # Use float32
-        valid_action_indices = [position] + neighbors  # Current node + neighbor nodes
+        action_mask = np.zeros(self.num_nodes, dtype=np.float32)
+        valid_action_indices = [position] + neighbors
         action_mask[valid_action_indices] = 1.0
 
-        # Concatenate components into a flat vector
         if agent.startswith("evader"):
-            # Evader observation order: pos, safe, pursuers, evaders, adj, mask
             observation_vector = np.concatenate(
                 [
-                    np.array([float(position)], dtype=np.float32),  # ego position
+                    np.array([float(position)], dtype=np.float32),
                     pursuer_positions,
                     evader_positions,
                     adjacency_obs,
                     action_mask,
-                    np.array([float(self.safe_node)], dtype=np.float32),  # safe node
-                ]  # 4*num_nodes
+                    np.array([float(self.safe_node)], dtype=np.float32),
+                ]
             ).astype(np.float32)
-        else:  # Pursuer
-            # Pursuer observation order: pos, pursuers, evaders, adj, mask, [padding]
+        else:
             base_vector = np.concatenate(
                 [
                     np.array([float(position)], dtype=np.float32),
@@ -349,10 +318,7 @@ class GPE(ParallelEnv):
                     action_mask,
                 ]
             )
-            # Add padding if necessary to match the evader's flat size
-            padding = np.zeros(
-                self._pursuer_padding_size, dtype=np.float32
-            )  # Use 0.0 for padding
+            padding = np.zeros(self._pursuer_padding_size, dtype=np.float32)
             observation_vector = np.concatenate([base_vector, padding]).astype(
                 np.float32
             )
@@ -396,19 +362,18 @@ class GPE(ParallelEnv):
                 or effective_action in self.graph.neighbors(current_position)
             )
             if is_valid_move:
-                next_positions[agent] = effective_action  # Store intended next position
+                next_positions[agent] = effective_action
             else:
                 self.infos[agent]["invalid_action"] = True
 
             if effective_action == current_position:
-                self.rewards[agent] += -self.stay_penalty  # Penalize staying put
+                self.rewards[agent] += -self.stay_penalty
 
         self.agent_positions = next_positions
 
-        # !!!Check also before the action!!!
         self._check_captures()
         self._check_safe_arrivals()
-        self._check_termination()  # This method updates self.terminations for all agents
+        self._check_termination()
 
         self.timestep += 1
 
@@ -421,7 +386,7 @@ class GPE(ParallelEnv):
         for agent in self.agents:
             if not self.terminations[agent] and not self.truncations[agent]:
                 active_agents_next_step.append(agent)
-        self.agents = active_agents_next_step  # Update self.agents for the next step's input validation
+        self.agents = active_agents_next_step
 
         observations = {agent: self._get_observation(agent) for agent in actions.keys()}
 
@@ -465,39 +430,28 @@ class GPE(ParallelEnv):
     def _check_safe_arrivals(self):
         """Check if any evaders have reached the safe node."""
         for evader in self.evaders:
-            # Skip if already captured
             if evader in self.captured_evaders:
                 continue
 
-            # Check if the evader is at the safe node
             if self.agent_positions[evader] == self.safe_node:
-                # Only update rewards/terminations if the agent was active at the start of this step
-                # (i.e., present in the self.rewards dictionary keys)
                 if evader in self.rewards:
                     self.rewards[evader] += self.escape_reward_evader
                     self.terminations[evader] = True
-                    # Assign negative reward to pursuers active in this step
                     for pursuer in self.pursuers:
-                        # Check if the pursuer is also active in this step before assigning reward
                         if pursuer in self.rewards:
                             self.rewards[pursuer] += self.escape_reward_pursuer
 
     def _check_termination(self):
         """Check if the overall game should terminate."""
-        # Game ends if all evaders are either captured or have reached the safe node
-        active_evaders = (
-            set(self.evaders) - self.captured_evaders
-        )  # Evaders not yet captured
-        # Count how many of the *active* evaders are at the safe node
+        active_evaders = set(self.evaders) - self.captured_evaders
         evaders_at_safe_node = sum(
             1 for e in active_evaders if self.agent_positions[e] == self.safe_node
         )
 
-        # Condition: No active evaders left OR all active evaders are at the safe node
         if len(active_evaders) == 0 or evaders_at_safe_node == len(active_evaders):
-            for agent in self.agents:  # Use the current self.agents list
+            for agent in self.agents:
                 if not self.terminations[agent]:
-                    self.terminations[agent] = True  # Set global termination
+                    self.terminations[agent] = True
 
     def observation_space(self, agent):
         """Return the observation space for a specific agent."""
@@ -515,7 +469,6 @@ class GPE(ParallelEnv):
         if self.render_mode is None:
             return
 
-        # Print basic info to console
         print(f"Timestep: {self.timestep}")
         print(f"Safe node: {self.safe_node}")
         print("Pursuer positions:", {p: self.agent_positions[p] for p in self.pursuers})
@@ -528,21 +481,12 @@ class GPE(ParallelEnv):
         )
 
         if self.render_mode == "human":
-            # Use the same figure window for animation effect
-            if not hasattr(self, "fig") or not plt.fignum_exists(
-                self.fig.number
-            ):  # Check if figure exists/was closed
+            if not hasattr(self, "fig") or not plt.fignum_exists(self.fig.number):
                 self.fig = plt.figure(figsize=(12, 8))
-                self.ax = self.fig.add_subplot(111)  # Add axes object
-                # Calculate layout once per episode or if graph changes
+                self.ax = self.fig.add_subplot(111)
                 if not hasattr(self, "pos_layout") or self.timestep == 0:
-                    # Use a layout more suitable for grid graphs if possible
-                    # spring_layout can work, but kamada_kawai might sometimes look better
-                    # Or, if you know the grid dimensions (m, n), you could reconstruct positions
                     try:
-                        # Attempt to get grid dimensions if graph has them (grid_2d_graph adds them)
                         m, n = self.graph.graph["dim"]
-                        # Create positions based on grid coordinates (inverted y-axis for typical matrix display)
                         self.pos_layout = {
                             node: (data["pos"][1], -data["pos"][0])
                             for node, data in self.graph.nodes(data=True)
@@ -554,11 +498,9 @@ class GPE(ParallelEnv):
                             self.graph, k=1, iterations=50
                         )
 
-            # Activate the figure and clear previous drawing
             plt.figure(self.fig.number)
-            self.ax.clear()  # Clear axes instead of clf()
+            self.ax.clear()
 
-            # Draw graph structure using pre-calculated layout
             nx.draw_networkx_nodes(
                 self.graph,
                 self.pos_layout,
@@ -573,11 +515,8 @@ class GPE(ParallelEnv):
                 self.graph, self.pos_layout, ax=self.ax, font_size=8
             )
 
-            # Draw agents
-            # Pursuers
             pursuer_handles = []
             for pursuer in self.pursuers:
-                # Check if pursuer still exists (relevant if agents can be removed dynamically)
                 if pursuer in self.agent_positions:
                     position = self.agent_positions[pursuer]
                     (handle,) = self.ax.plot(
@@ -597,49 +536,41 @@ class GPE(ParallelEnv):
                         fontsize=8,
                     )
 
-            # Evaders (Active and Captured)
             evader_handles = []
             captured_evader_handles = []
             for evader in self.evaders:
-                # Check if evader still exists in positions (might be redundant but safe)
                 if evader in self.agent_positions:
                     position = self.agent_positions[evader]
                     is_captured = evader in self.captured_evaders
 
-                    color = (
-                        "yo" if is_captured else "bo"
-                    )  # Yellow if captured, Blue if active
+                    color = "yo" if is_captured else "bo"
                     label_suffix = " (Captured)" if is_captured else ""
-                    marker_size = (
-                        12 if is_captured else 15
-                    )  # Slightly smaller marker for captured
+                    marker_size = 12 if is_captured else 15
 
                     (handle,) = self.ax.plot(
                         self.pos_layout[position][0],
                         self.pos_layout[position][1],
                         color,
                         markersize=marker_size,
-                        label=f"{evader}{label_suffix}",  # Modified label
+                        label=f"{evader}{label_suffix}",
                     )
 
                     if is_captured:
                         captured_evader_handles.append(handle)
-                        # Add annotation for captured evaders
                         self.ax.annotate(
                             f"{evader}\n(Captured)",
                             (
                                 self.pos_layout[position][0],
                                 self.pos_layout[position][1],
                             ),
-                            xytext=(10, -15),  # Adjust text position
+                            xytext=(10, -15),
                             textcoords="offset points",
-                            color="orange",  # Use orange text for captured annotation
+                            color="orange",
                             fontsize=7,
                             ha="left",
                         )
                     else:
                         evader_handles.append(handle)
-                        # Add annotation for active evaders (original logic)
                         self.ax.annotate(
                             evader,
                             (
@@ -653,8 +584,7 @@ class GPE(ParallelEnv):
                             ha="left",
                         )
 
-            # Safe Node
-            if self.safe_node is not None:  # Ensure safe node exists
+            if self.safe_node is not None:
                 (safe_handle,) = self.ax.plot(
                     self.pos_layout[self.safe_node][0],
                     self.pos_layout[self.safe_node][1],
@@ -675,17 +605,13 @@ class GPE(ParallelEnv):
                     ha="center",
                 )
 
-            # Add title and adjust axes
             self.ax.set_title(f"Timestep: {self.timestep}", fontsize=14)
             self.ax.set_xticks([])
             self.ax.set_yticks([])
 
-            # Create legend (might need adjustment if too many captured agents clutter it)
-            # Option: Combine handles or create separate legends
             all_handles = pursuer_handles + evader_handles + captured_evader_handles
-            if hasattr(self, "safe_handle"):  # Add safe node handle if it exists
+            if hasattr(self, "safe_handle"):
                 all_handles.append(safe_handle)
-            # Filter out handles with empty labels if any issue arises
             valid_handles = [
                 h
                 for h in all_handles
@@ -693,14 +619,11 @@ class GPE(ParallelEnv):
             ]
             labels = [h.get_label() for h in valid_handles]
 
-            # Limit number of legend entries if needed
             max_legend_entries = 15
             if len(valid_handles) > max_legend_entries:
-                # Prioritize showing pursuers, active evaders, and safe node
                 priority_handles = pursuer_handles + evader_handles
                 if hasattr(self, "safe_handle"):
                     priority_handles.append(safe_handle)
-                # Add a few captured ones if space allows
                 priority_handles += captured_evader_handles[
                     : max_legend_entries - len(priority_handles)
                 ]
@@ -710,9 +633,7 @@ class GPE(ParallelEnv):
                     if h.get_label() and not h.get_label().startswith("_")
                 ]
                 labels = [h.get_label() for h in valid_handles]
-                # Add an indicator that some entries are omitted
                 if len(all_handles) > len(valid_handles):
-                    # Create a dummy handle for the "..." entry
                     from matplotlib.lines import Line2D
 
                     dummy_handle = Line2D(
@@ -730,19 +651,14 @@ class GPE(ParallelEnv):
                 fontsize="small",
             )
 
-            # Adjust layout
-            self.fig.tight_layout(
-                rect=[0, 0, 0.85, 1]
-            )  # Adjust rect more if legend is wide
+            self.fig.tight_layout(rect=[0, 0, 0.85, 1])
 
-            # Pause
             plt.pause(0.5)
 
     def close(self):
         """Close the rendering window."""
         if hasattr(self, "fig") and plt.fignum_exists(self.fig.number):
             plt.close(self.fig.number)
-            # Ensure layout attribute is removed so it recalculates if render is called again
             if hasattr(self, "pos_layout"):
                 delattr(self, "pos_layout")
 
@@ -806,7 +722,6 @@ class GPE(ParallelEnv):
                     except nx.NetworkXNoPath:
                         continue
 
-                # Move away from the nearest pursuer
                 if nearest_pursuer_pos is not None:
                     neighbors = list(self.graph.neighbors(current_pos))
                     best_neighbor = None
