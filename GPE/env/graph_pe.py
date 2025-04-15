@@ -189,43 +189,51 @@ class GPE(ParallelEnv):
         """
 
         if self.custom_graph is not None:
-            return copy(
-                self.custom_graph
-            )  # Return a copy to avoid modifying the original
+            return copy(self.custom_graph)
+
+        m = int(np.floor(np.sqrt(self.num_nodes)))
+        n = int(np.ceil(self.num_nodes / m))
+        actual_num_nodes = m * n
+        graph = nx.grid_2d_graph(m, n)
+        graph = nx.convert_node_labels_to_integers(
+            graph, first_label=0, ordering="default"
+        )
+
+        return graph
 
         # Generate random graph (Erdős-Rényi model)
         # Edge probability p calculated for approximate num_edges
-        p = 2 * self.num_edges / (self.num_nodes * (self.num_nodes - 1))
-        graph = nx.gnp_random_graph(
-            self.num_nodes, p, seed=self.np_random.randint(10000)
-        )
+        # p = 2 * self.num_edges / (self.num_nodes * (self.num_nodes - 1))
+        # graph = nx.gnp_random_graph(
+        #     self.num_nodes, p, seed=self.np_random.randint(10000)
+        # )
 
         # Ensure the graph is connected
-        if not nx.is_connected(graph):
-            # Take the largest connected component
-            largest_cc = max(nx.connected_components(graph), key=len)
-            graph = graph.subgraph(largest_cc).copy()  # Work with the largest component
+        # if not nx.is_connected(graph):
+        #     # Take the largest connected component
+        #     largest_cc = max(nx.connected_components(graph), key=len)
+        #     graph = graph.subgraph(largest_cc).copy()  # Work with the largest component
 
-            # Add random edges between remaining components to connect them
-            nodes = list(graph.nodes())  # Get nodes of the current subgraph
-            components = list(nx.connected_components(graph))
+        #     # Add random edges between remaining components to connect them
+        #     nodes = list(graph.nodes())  # Get nodes of the current subgraph
+        #     components = list(nx.connected_components(graph))
 
-            while len(components) > 1:
-                # Pick two random components
-                comp1 = random.choice(components)
-                components.remove(comp1)
-                comp2 = random.choice(components)
-                # components.remove(comp2) # Bug fix: Don't remove the second component yet
+        #     while len(components) > 1:
+        #         # Pick two random components
+        #         comp1 = random.choice(components)
+        #         components.remove(comp1)
+        #         comp2 = random.choice(components)
+        #         # components.remove(comp2) # Bug fix: Don't remove the second component yet
 
-                # Pick one random node from each component and add an edge
-                node1 = random.choice(list(comp1))
-                node2 = random.choice(list(comp2))
-                graph.add_edge(node1, node2)
+        #         # Pick one random node from each component and add an edge
+        #         node1 = random.choice(list(comp1))
+        #         node2 = random.choice(list(comp2))
+        #         graph.add_edge(node1, node2)
 
-                # Recalculate components after adding edge
-                components = list(nx.connected_components(graph))
+        #         # Recalculate components after adding edge
+        #         components = list(nx.connected_components(graph))
 
-        return graph
+        # return graph
 
     def reset(self, seed=None, options=None):
         """Reset the environment and return initial observations."""
@@ -502,6 +510,7 @@ class GPE(ParallelEnv):
     def render(self):
         """Render the environment state.
         Displays the current state in the same figure window, creating animation when called in a loop.
+        Captured evaders are shown in yellow.
         """
         if self.render_mode is None:
             return
@@ -511,14 +520,12 @@ class GPE(ParallelEnv):
         print(f"Safe node: {self.safe_node}")
         print("Pursuer positions:", {p: self.agent_positions[p] for p in self.pursuers})
         print(
-            "Active Evader positions:",  # Clarified label
+            "Evader positions (Active/Captured):",
             {
-                e: self.agent_positions[e]
+                e: f"{self.agent_positions[e]}{' (Captured)' if e in self.captured_evaders else ''}"
                 for e in self.evaders
-                if e not in self.captured_evaders  # Only show non-captured evaders
             },
         )
-        print("Captured evaders:", self.captured_evaders)
 
         if self.render_mode == "human":
             # Use the same figure window for animation effect
@@ -528,16 +535,30 @@ class GPE(ParallelEnv):
                 self.fig = plt.figure(figsize=(12, 8))
                 self.ax = self.fig.add_subplot(111)  # Add axes object
                 # Calculate layout once per episode or if graph changes
-                # (Assuming graph doesn't change mid-episode for performance)
                 if not hasattr(self, "pos_layout") or self.timestep == 0:
-                    self.pos_layout = nx.spring_layout(self.graph, k=1, iterations=50)
+                    # Use a layout more suitable for grid graphs if possible
+                    # spring_layout can work, but kamada_kawai might sometimes look better
+                    # Or, if you know the grid dimensions (m, n), you could reconstruct positions
+                    try:
+                        # Attempt to get grid dimensions if graph has them (grid_2d_graph adds them)
+                        m, n = self.graph.graph["dim"]
+                        # Create positions based on grid coordinates (inverted y-axis for typical matrix display)
+                        self.pos_layout = {
+                            node: (data["pos"][1], -data["pos"][0])
+                            for node, data in self.graph.nodes(data=True)
+                        }
+                        print("Using grid layout for rendering.")
+                    except KeyError:
+                        print("Using spring layout for rendering.")
+                        self.pos_layout = nx.spring_layout(
+                            self.graph, k=1, iterations=50
+                        )
 
             # Activate the figure and clear previous drawing
             plt.figure(self.fig.number)
             self.ax.clear()  # Clear axes instead of clf()
 
             # Draw graph structure using pre-calculated layout
-            # Nodes
             nx.draw_networkx_nodes(
                 self.graph,
                 self.pos_layout,
@@ -545,11 +566,9 @@ class GPE(ParallelEnv):
                 node_color="lightgray",
                 node_size=500,
             )
-            # Edges
             nx.draw_networkx_edges(
                 self.graph, self.pos_layout, ax=self.ax, edge_color="gray", width=1
             )
-            # Node labels
             nx.draw_networkx_labels(
                 self.graph, self.pos_layout, ax=self.ax, font_size=8
             )
@@ -558,98 +577,174 @@ class GPE(ParallelEnv):
             # Pursuers
             pursuer_handles = []
             for pursuer in self.pursuers:
-                position = self.agent_positions[pursuer]
-                (handle,) = self.ax.plot(  # Use self.ax.plot
-                    self.pos_layout[position][0],
-                    self.pos_layout[position][1],
-                    "ro",
-                    markersize=15,
-                    label=pursuer,  # Label for legend
-                )
-                pursuer_handles.append(
-                    handle
-                )  # Store handle for potential legend filtering
-                # Add pursuer annotation
-                self.ax.annotate(  # Use self.ax.annotate
-                    pursuer,
-                    (self.pos_layout[position][0], self.pos_layout[position][1]),
-                    xytext=(10, 10),
-                    textcoords="offset points",
-                    color="red",
-                    fontsize=8,
-                )
-
-            # Active Evaders
-            evader_handles = []
-            for evader in self.evaders:
-                if evader not in self.captured_evaders:
-                    position = self.agent_positions[evader]
-                    (handle,) = self.ax.plot(  # Use self.ax.plot
+                # Check if pursuer still exists (relevant if agents can be removed dynamically)
+                if pursuer in self.agent_positions:
+                    position = self.agent_positions[pursuer]
+                    (handle,) = self.ax.plot(
                         self.pos_layout[position][0],
                         self.pos_layout[position][1],
-                        "bo",
+                        "ro",
                         markersize=15,
-                        label=evader,  # Label for legend
+                        label=pursuer,
                     )
-                    evader_handles.append(handle)
-                    # Add evader annotation
-                    self.ax.annotate(  # Use self.ax.annotate
-                        evader,
+                    pursuer_handles.append(handle)
+                    self.ax.annotate(
+                        pursuer,
                         (self.pos_layout[position][0], self.pos_layout[position][1]),
-                        xytext=(10, -10),
+                        xytext=(10, 10),
                         textcoords="offset points",
-                        color="blue",
+                        color="red",
                         fontsize=8,
                     )
 
+            # Evaders (Active and Captured)
+            evader_handles = []
+            captured_evader_handles = []
+            for evader in self.evaders:
+                # Check if evader still exists in positions (might be redundant but safe)
+                if evader in self.agent_positions:
+                    position = self.agent_positions[evader]
+                    is_captured = evader in self.captured_evaders
+
+                    color = (
+                        "yo" if is_captured else "bo"
+                    )  # Yellow if captured, Blue if active
+                    label_suffix = " (Captured)" if is_captured else ""
+                    marker_size = (
+                        12 if is_captured else 15
+                    )  # Slightly smaller marker for captured
+
+                    (handle,) = self.ax.plot(
+                        self.pos_layout[position][0],
+                        self.pos_layout[position][1],
+                        color,
+                        markersize=marker_size,
+                        label=f"{evader}{label_suffix}",  # Modified label
+                    )
+
+                    if is_captured:
+                        captured_evader_handles.append(handle)
+                        # Add annotation for captured evaders
+                        self.ax.annotate(
+                            f"{evader}\n(Captured)",
+                            (
+                                self.pos_layout[position][0],
+                                self.pos_layout[position][1],
+                            ),
+                            xytext=(10, -15),  # Adjust text position
+                            textcoords="offset points",
+                            color="orange",  # Use orange text for captured annotation
+                            fontsize=7,
+                            ha="left",
+                        )
+                    else:
+                        evader_handles.append(handle)
+                        # Add annotation for active evaders (original logic)
+                        self.ax.annotate(
+                            evader,
+                            (
+                                self.pos_layout[position][0],
+                                self.pos_layout[position][1],
+                            ),
+                            xytext=(10, -10),
+                            textcoords="offset points",
+                            color="blue",
+                            fontsize=8,
+                            ha="left",
+                        )
+
             # Safe Node
-            (safe_handle,) = self.ax.plot(  # Use self.ax.plot
-                self.pos_layout[self.safe_node][0],
-                self.pos_layout[self.safe_node][1],
-                "go",
-                markersize=20,
-                label="Safe Node",
-            )
-            self.ax.annotate(  # Use self.ax.annotate
-                "SAFE",
-                (
+            if self.safe_node is not None:  # Ensure safe node exists
+                (safe_handle,) = self.ax.plot(
                     self.pos_layout[self.safe_node][0],
                     self.pos_layout[self.safe_node][1],
-                ),
-                xytext=(0, 20),
-                textcoords="offset points",
-                color="green",
-                fontsize=10,
-                ha="center",
-            )
+                    "go",
+                    markersize=20,
+                    label="Safe Node",
+                )
+                self.ax.annotate(
+                    "SAFE",
+                    (
+                        self.pos_layout[self.safe_node][0],
+                        self.pos_layout[self.safe_node][1],
+                    ),
+                    xytext=(0, 20),
+                    textcoords="offset points",
+                    color="green",
+                    fontsize=10,
+                    ha="center",
+                )
 
-            # Add title with timestep
-            self.ax.set_title(
-                f"Timestep: {self.timestep}", fontsize=14
-            )  # Use self.ax.set_title
-            self.ax.set_xticks([])  # Hide axes ticks
+            # Add title and adjust axes
+            self.ax.set_title(f"Timestep: {self.timestep}", fontsize=14)
+            self.ax.set_xticks([])
             self.ax.set_yticks([])
 
-            # Create legend (optional: filter handles if needed)
-            # handles = pursuer_handles + evader_handles + [safe_handle]
-            # labels = [h.get_label() for h in handles]
-            # self.ax.legend(handles, labels, loc='upper left', bbox_to_anchor=(1.02, 1), borderaxespad=0.)
+            # Create legend (might need adjustment if too many captured agents clutter it)
+            # Option: Combine handles or create separate legends
+            all_handles = pursuer_handles + evader_handles + captured_evader_handles
+            if hasattr(self, "safe_handle"):  # Add safe node handle if it exists
+                all_handles.append(safe_handle)
+            # Filter out handles with empty labels if any issue arises
+            valid_handles = [
+                h
+                for h in all_handles
+                if h.get_label() and not h.get_label().startswith("_")
+            ]
+            labels = [h.get_label() for h in valid_handles]
+
+            # Limit number of legend entries if needed
+            max_legend_entries = 15
+            if len(valid_handles) > max_legend_entries:
+                # Prioritize showing pursuers, active evaders, and safe node
+                priority_handles = pursuer_handles + evader_handles
+                if hasattr(self, "safe_handle"):
+                    priority_handles.append(safe_handle)
+                # Add a few captured ones if space allows
+                priority_handles += captured_evader_handles[
+                    : max_legend_entries - len(priority_handles)
+                ]
+                valid_handles = [
+                    h
+                    for h in priority_handles
+                    if h.get_label() and not h.get_label().startswith("_")
+                ]
+                labels = [h.get_label() for h in valid_handles]
+                # Add an indicator that some entries are omitted
+                if len(all_handles) > len(valid_handles):
+                    # Create a dummy handle for the "..." entry
+                    from matplotlib.lines import Line2D
+
+                    dummy_handle = Line2D(
+                        [0], [0], marker="None", linestyle="None", label="..."
+                    )
+                    valid_handles.append(dummy_handle)
+                    labels.append("...")
+
             self.ax.legend(
-                loc="upper left", bbox_to_anchor=(1.02, 1), borderaxespad=0.0
+                valid_handles,
+                labels,
+                loc="upper left",
+                bbox_to_anchor=(1.02, 1),
+                borderaxespad=0.0,
+                fontsize="small",
             )
 
-            # Adjust layout to prevent legend overlap
+            # Adjust layout
             self.fig.tight_layout(
-                rect=[0, 0, 0.9, 1]
-            )  # Adjust rect to make space for legend
+                rect=[0, 0, 0.85, 1]
+            )  # Adjust rect more if legend is wide
 
-            # Pause for animation
+            # Pause
             plt.pause(0.5)
 
     def close(self):
         """Close the rendering window."""
         if hasattr(self, "fig") and plt.fignum_exists(self.fig.number):
             plt.close(self.fig.number)
+            # Ensure layout attribute is removed so it recalculates if render is called again
+            if hasattr(self, "pos_layout"):
+                delattr(self, "pos_layout")
 
     def shortest_path_action(self, agent):
         """
