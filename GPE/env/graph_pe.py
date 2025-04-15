@@ -183,7 +183,7 @@ class GPE(ParallelEnv):
         return graph
 
     def reset(self, seed=None, options=None):
-        """Reset the environment ensuring pursuers and evaders are not adjacent initially."""
+        """Reset the environment. Attempts safe initial placement, falls back to random if needed."""
 
         if seed is not None:
             self.np_random = np.random.RandomState(seed)
@@ -197,51 +197,68 @@ class GPE(ParallelEnv):
         self.infos = {agent: {} for agent in self.agents}
         self.captured_evaders = set()
         all_nodes = list(self.graph.nodes())
+        all_nodes_set = set(all_nodes)  # Use set for faster operations
         self.agent_positions = {}
 
-        # 1. Place Pursuers
-        if self.num_pursuers > len(all_nodes):
+        # Ensure enough nodes total
+        if len(all_nodes) < self.num_pursuers + self.num_evaders:
             raise ValueError(
-                f"Cannot place {self.num_pursuers} pursuers on a graph with {len(all_nodes)} nodes."
+                f"Not enough nodes ({len(all_nodes)}) in the graph for all agents ({self.num_pursuers + self.num_evaders})."
             )
+
+        # 1. Place Pursuers
         pursuer_nodes = self.np_random.choice(
             all_nodes, size=self.num_pursuers, replace=False
         )
         for i, agent in enumerate(self.pursuers):
             self.agent_positions[agent] = int(pursuer_nodes[i])
 
-        # 2. Determine Danger Zone (pursuer nodes + their neighbors)
+        # Calculate nodes available *after* placing pursuers (needed for fallback)
+        pursuer_nodes_set = set(pursuer_nodes)
+        remaining_nodes = list(all_nodes_set - pursuer_nodes_set)
+
+        # Calculate Danger Zone
         danger_zone = set(pursuer_nodes)
         for p_node in pursuer_nodes:
-            # Add neighbors to the danger zone
             try:
                 neighbors = set(self.graph.neighbors(p_node))
                 danger_zone.update(neighbors)
-            except (
-                nx.NetworkXError
-            ):  # Handle potential errors if node somehow not in graph
+            except nx.NetworkXError:
                 print(
                     f"Warning: Pursuer node {p_node} not found in graph during danger zone calculation."
                 )
 
-        # 3. Determine Safe Zone for Evaders
-        all_nodes_set = set(all_nodes)
+        # Calculate Safe Zone for Evaders
         safe_zone_for_evaders = list(all_nodes_set - danger_zone)
 
-        # 4. Check if Safe Zone is large enough
-        if len(safe_zone_for_evaders) < self.num_evaders:
-            raise ValueError(
-                f"Could not find enough safe starting positions for evaders. "
-                f"Safe zone size: {len(safe_zone_for_evaders)}, Evaders needed: {self.num_evaders}. "
-                f"Consider reducing agent numbers or using a larger/sparser graph."
+        # Attempt to place evaders in the safe zone
+        if len(safe_zone_for_evaders) >= self.num_evaders:
+            # Place Evaders in the Safe Zone (Ideal Case)
+            print("Placing evaders in calculated safe zone.")
+            evader_nodes = self.np_random.choice(
+                safe_zone_for_evaders, size=self.num_evaders, replace=False
             )
-
-        # 5. Place Evaders in the Safe Zone
-        evader_nodes = self.np_random.choice(
-            safe_zone_for_evaders, size=self.num_evaders, replace=False
-        )
-        for i, agent in enumerate(self.evaders):
-            self.agent_positions[agent] = int(evader_nodes[i])
+            for i, agent in enumerate(self.evaders):
+                self.agent_positions[agent] = int(evader_nodes[i])
+        else:
+            # Fallback: Place evaders randomly among remaining nodes (Not guaranteed safe)
+            print(
+                f"Warning: Safe zone ({len(safe_zone_for_evaders)} nodes) is too small for {self.num_evaders} evaders. "
+                f"Falling back to random placement in remaining {len(remaining_nodes)} nodes."
+            )
+            # Double-check if enough remaining nodes exist even for fallback
+            if len(remaining_nodes) < self.num_evaders:
+                # This should be caught by the initial total node check, but as a safeguard:
+                raise ValueError(
+                    f"Fallback failed: Not enough remaining nodes ({len(remaining_nodes)}) "
+                    f"to place {self.num_evaders} evaders after placing pursuers."
+                )
+            # Place evaders randomly in the nodes not occupied by pursuers
+            evader_nodes = self.np_random.choice(
+                remaining_nodes, size=self.num_evaders, replace=False
+            )
+            for i, agent in enumerate(self.evaders):
+                self.agent_positions[agent] = int(evader_nodes[i])
 
         # Choose a safe node (must not be occupied by any agent)
         occupied_nodes = set(self.agent_positions.values())
@@ -249,22 +266,23 @@ class GPE(ParallelEnv):
         if available_nodes_for_safe_node:
             self.safe_node = self.np_random.choice(available_nodes_for_safe_node)
         else:
-            # Fallback: Should be very rare now, but try placing on an evader spot
-            # as pursuers are guaranteed not to be there initially.
-            if evader_nodes.size > 0:
-                self.safe_node = self.np_random.choice(evader_nodes)
+            # ... (existing fallback logic for safe node placement remains the same) ...
+            pursuer_positions_set = {
+                self.agent_positions[p] for p in self.pursuers
+            }  # Need to recalculate based on final positions
+            evader_positions_set = {
+                self.agent_positions[e]
+                for e in self.evaders
+                if e in self.agent_positions
+            }  # Get final evader positions
+            non_pursuer_nodes = list(all_nodes_set - pursuer_positions_set)
+            if non_pursuer_nodes:
+                self.safe_node = self.np_random.choice(non_pursuer_nodes)
+            else:  # Should be impossible if checks above work
                 print(
-                    "Warning: No unoccupied node found for safe node. Placing on an evader's start position."
+                    "Warning: Cannot find a suitable safe node placement. Placing randomly."
                 )
-            else:  # If no evaders, place randomly amongst non-pursuer nodes.
-                non_pursuer_nodes = list(all_nodes_set - set(pursuer_nodes))
-                if non_pursuer_nodes:
-                    self.safe_node = self.np_random.choice(non_pursuer_nodes)
-                else:  # Should be impossible if graph has nodes
-                    self.safe_node = self.np_random.choice(all_nodes)
-                    print(
-                        "Warning: Highly unusual scenario. Placing safe node randomly."
-                    )
+                self.safe_node = self.np_random.choice(all_nodes)
 
         # Generate initial observations for all agents
         observations = {agent: self._get_observation(agent) for agent in self.agents}
