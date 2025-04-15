@@ -16,3 +16,5 @@ training_logs/
 bck/
 *.gif
 viz_gif/
+mpe_simple.py
+others/
