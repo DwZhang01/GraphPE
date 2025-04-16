@@ -493,7 +493,7 @@ if __name__ == "__main__":
     policy_kwargs = {
         "features_extractor_class": GNNFeatureExtractor,
         "features_extractor_kwargs": {"features_dim": 128},
-        "net_arch": [dict(pi=[64, 64], vf=[64, 64])],
+        "net_arch": [dict(pi=[64, 64], vf=[128, 128])],
     }
 
     # 确保设备配置正确
