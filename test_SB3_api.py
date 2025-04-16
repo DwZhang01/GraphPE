@@ -327,8 +327,8 @@ class CaptureDebugCallback(BaseCallback):
         info = self.locals["infos"][0]
         if "capture" in info and info["capture"]:
             self.capture_count += 1
-            print(f"Step {self.n_calls}: 捕获事件发生! (总计: {self.capture_count})")
-            print(f"当前奖励: {self.locals['rewards'][0]}")
+            print(f"Step {self.n_calls}: Capture! Total: {self.capture_count})")
+            # print(f"当前奖励: {self.locals['rewards'][0]}")
         return True
 
 
@@ -350,6 +350,43 @@ class DetailedDebugCallback(BaseCallback):
         return True
 
 
+# --- Start Edit: Add EscapeDebugCallback Class ---
+class EscapeDebugCallback(BaseCallback):
+    """
+    A custom callback that detects and prints when an escape event occurs.
+    NOTE: Assumes the environment's info dictionary (potentially processed by VecEnv)
+          contains an 'escape' flag.
+    """
+
+    def __init__(self, verbose=0):
+        super().__init__(verbose)
+        self.escape_count = 0
+        self.last_escape_step = -1  # Avoid double counting if info persists
+
+    def _on_step(self):
+        # In VecEnv, infos is a list (usually size 1 if num_vec_envs=1)
+        info = self.locals["infos"][0]
+
+        # Check if the 'escape' key exists and is True
+        # The exact structure might depend on VecEnv wrapper, but check top level first
+        if "escape" in info and info["escape"]:
+            # Avoid counting the same event multiple times if info persists across steps within an episode for done envs
+            if self.n_calls != self.last_escape_step:
+                self.escape_count += 1
+                self.last_escape_step = self.n_calls
+                if self.verbose > 0:
+                    print(f"Step {self.n_calls}: Escape! Total: {self.escape_count}")
+                    # Optionally print reward if helpful
+                    # print(f"  当前奖励: {self.locals['rewards'][0]}")
+
+        # Reset last escape step if the episode is done
+        done = self.locals["dones"][0]
+        if done:
+            self.last_escape_step = -1
+
+        return True
+
+
 # Main execution
 if __name__ == "__main__":
     # 环境配置
@@ -359,12 +396,11 @@ if __name__ == "__main__":
         "num_evaders": 1,
         "max_steps": 50,
         "p_act": 1,
-        # Add other rewards if necessary
         "capture_reward_pursuer": 20.0,
         "capture_reward_evader": -20.0,
         "escape_reward_evader": 100.0,
         "escape_reward_pursuer": -100.0,
-        "stay_penalty": -0.1,
+        "stay_penalty": -1.0,
     }
 
     # --- Start Edit: Generate Grid Graph for Test ---
@@ -416,9 +452,17 @@ if __name__ == "__main__":
         # Ensure the env passed is the GNNEnvWrapper instance
         vec_env = ss.pettingzoo_env_to_vec_env_v1(env)
         print("pettingzoo_env_to_vec_env_v1 successful.")
-        vec_env = ss.concat_vec_envs_v1(
-            vec_env, num_vec_envs=1, num_cpus=1, base_class="stable_baselines3"
+        # --- Start Edit: Increase num_vec_envs ---
+        N_ENVS = (
+            1  # Example: Number of parallel environments (adjust based on CPU cores)
         )
+        vec_env = ss.concat_vec_envs_v1(
+            vec_env,
+            num_vec_envs=N_ENVS,
+            num_cpus=N_ENVS,  # Match num_vec_envs or available cores
+            base_class="stable_baselines3",
+        )
+        # --- End Edit ---
         print("concat_vec_envs_v1 successful.")
         print("Vectorization successful using Supersuit.")
     except Exception as e:
@@ -461,10 +505,10 @@ if __name__ == "__main__":
         vec_env,
         verbose=1,
         policy_kwargs=policy_kwargs,
-        learning_rate=3e-4,
+        learning_rate=1e-4,
         n_steps=2048,
-        batch_size=64,
-        n_epochs=10,
+        batch_size=1024,
+        n_epochs=20,
         gamma=0.99,
         ent_coef=0.01,
         gae_lambda=0.95,
@@ -477,12 +521,19 @@ if __name__ == "__main__":
         num_pursuers=env_config["num_pursuers"], num_evaders=env_config["num_evaders"]
     )
     capture_debug = CaptureDebugCallback(verbose=1)
+    escape_debug = EscapeDebugCallback(verbose=1)  # Instantiate the new callback
     detailed_debug = DetailedDebugCallback(verbose=1)
-    callbacks = CallbackList([reward_callback, capture_debug, detailed_debug])
+    callbacks = CallbackList(
+        [reward_callback, capture_debug, escape_debug, detailed_debug]
+    )
 
     # 训练模型
     print(f"Starting GNN PPO training on device: {model.device}")
-    model.learn(total_timesteps=100000, callback=callbacks)  # Increased timesteps
+    # --- Start Edit: Increase timesteps significantly ---
+    total_training_timesteps = 500000  # Example: Increased further
+    print(f"Training for {total_training_timesteps} timesteps...")
+    # --- End Edit ---
+    model.learn(total_timesteps=total_training_timesteps, callback=callbacks)
     print("Training finished.")
 
     # Save the policy
@@ -569,7 +620,8 @@ if __name__ == "__main__":
     print("\nCallback 验证:")
     print(f"总步数: {reward_callback.total_steps}")
     print(f"总episode数: {reward_callback.episodes}")
-    print(f"捕获次数: {capture_debug.capture_count}")
+    print(f"捕获次数 (Callback): {capture_debug.capture_count}")
+    print(f"逃跑次数 (Callback): {escape_debug.escape_count}")
     print(
         f"平均奖励: {np.mean(reward_callback.episode_rewards) if reward_callback.episode_rewards else 0}"
     )
