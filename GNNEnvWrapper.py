@@ -20,15 +20,7 @@ from GPE.env.graph_pe import GPE
 class GNNEnvWrapper(ParallelEnv):
     """
     Wraps the GPE environment to provide observations suitable for GNNs.
-    Inherits directly from ParallelEnv to ensure type compatibility.
-
-    Observation Space (per agent): Dict({
-        'node_features': Box(...),
-        'edge_index': Box(...),
-        'action_mask': Box(...),
-        'agent_node_index': Box(...)
-    })
-    Action Space (per agent): Inherited from GPE (Discrete)
+    Removed shortest path and degree features for efficiency.
     """
 
     metadata = {
@@ -37,18 +29,19 @@ class GNNEnvWrapper(ParallelEnv):
         "is_parallelizable": True,
     }
 
-    def __init__(self, env: GPE):  # Specific type hint for clarity
-        # Store the original environment
+    def __init__(self, env: GPE):
         self.env = env
-
-        # Copy essential attributes from the original environment
         self.num_nodes = self.env.num_nodes
-        self.max_edges = self.num_nodes * self.num_nodes  # Keep simple upper bound
-        self.feature_dim = 8
+        self.max_edges = self.num_nodes * self.num_nodes
+
+        # --- Start Edit: Reduce feature_dim (removed degree feature, index 4) ---
+        self.feature_dim = (
+            4  # Features: safe_node, pursuer_here, evader_here, current_agent
+        )
+        # --- End Edit ---
 
         self.render_mode = self.env.render_mode
 
-        # Define the GNN observation space structure (used by all agents)
         self._observation_space = GymDict(
             {
                 "node_features": Box(
@@ -71,23 +64,18 @@ class GNNEnvWrapper(ParallelEnv):
                 ),
                 "agent_node_index": Box(
                     low=0,
-                    high=self.num_nodes - 1,
+                    high=max(0, self.num_nodes - 1),
                     shape=(1,),
                     dtype=np.int64,
                 ),
             }
         )
-
-        # Required ParallelEnv properties/attributes
-        # Delegate possible_agents
         self.possible_agents = self.env.possible_agents
-
-        # State attributes managed by the wrapper or delegated
         self._current_graph_pyg = None
         self.padded_edge_index = None
-        # Agents list will be delegated via @property
-
-        # --- No reset call inside __init__ ---
+        # --- Start Edit: Remove distance attribute ---
+        # self.all_pairs_shortest_path_lengths = None # Removed
+        # --- End Edit ---
 
     # --- Implement Required ParallelEnv Methods ---
 
@@ -182,7 +170,7 @@ class GNNEnvWrapper(ParallelEnv):
             self.padded_edge_index = torch.cat([edge_index_long, padding], dim=1)
 
     def _create_node_features(self, agent):
-        """Creates the node feature matrix X."""
+        """Creates the node feature matrix X (without distance and degree features)."""
         if self.env.graph is None:
             raise RuntimeError("Cannot create node features: graph is None.")
 
@@ -190,116 +178,32 @@ class GNNEnvWrapper(ParallelEnv):
         safe_node = self.env.safe_node
         agent_positions = self.env.agent_positions
         current_agent_pos = agent_positions.get(agent, -1)
-        captured_evaders = self.env.captured_evaders  # Access base env state
+        captured_evaders = self.env.captured_evaders
 
-        # 1. Safe node
+        # Feature Index Map (New):
+        # 0: Is Safe Node
+        # 1: Pursuer Count Here
+        # 2: Active Evader Count Here
+        # 3: Is Current Agent Position
+
+        # 0. Safe node
         if safe_node is not None and 0 <= safe_node < self.num_nodes:
             node_features[safe_node, 0] = 1.0
 
-        # 2. Agent positions
+        # 1. & 2. Agent positions (Count)
         for other_agent, pos in agent_positions.items():
             if 0 <= pos < self.num_nodes:
                 if other_agent.startswith("pursuer"):
-                    node_features[pos, 1] += 1.0
+                    node_features[pos, 1] += 1.0  # Count pursuers at node
                 elif (
                     other_agent.startswith("evader")
                     and other_agent not in captured_evaders
                 ):
-                    node_features[pos, 2] += 1.0
+                    node_features[pos, 2] += 1.0  # Count active evaders at node
 
         # 3. Current agent position
         if 0 <= current_agent_pos < self.num_nodes:
             node_features[current_agent_pos, 3] = 1.0
-
-        # 4. Node degree
-        try:
-            # Use self.env.graph directly
-            degrees = np.array(
-                [self.env.graph.degree(n) for n in range(self.num_nodes)]
-            )
-            max_degree = np.max(degrees) if degrees.size > 0 else 1.0
-            node_features[:, 4] = degrees / max_degree if max_degree > 0 else 0.0
-        except (nx.NetworkXError, KeyError) as e:  # Catch KeyError if node not in graph
-            print(f"Warning: Error getting degrees: {e}")
-            node_features[:, 4] = 0.0
-
-        # 5. 到安全节点的距离（归一化）
-        if safe_node is not None:
-            max_dist_safe = (
-                0  # Find max distance for better normalization? Maybe 1/(dist+1) is ok.
-            )
-            for node in range(self.num_nodes):
-                try:
-                    # Use self.env.graph instead of self.unwrapped.graph
-                    path = nx.shortest_path(self.env.graph, node, safe_node)
-                    distance = len(path) - 1
-                    node_features[node, 5] = 1.0 / (distance + 1)
-                    max_dist_safe = max(max_dist_safe, distance)
-                except nx.NetworkXNoPath:
-                    node_features[node, 5] = 0.0
-            # Optional: Normalize by max distance: node_features[:, 5] /= (max_dist_safe + 1)
-
-        # 6. 到最近追捕者和逃跑者的距离（归一化）
-        max_dist_pursuer = 0
-        max_dist_evader = 0
-        all_pursuer_pos = [
-            p for a, p in agent_positions.items() if a.startswith("pursuer")
-        ]
-        all_evader_pos = [
-            p
-            for a, p in agent_positions.items()
-            # Use self.env.captured_evaders
-            if a.startswith("evader") and a not in self.env.captured_evaders
-        ]
-
-        for node in range(self.num_nodes):
-            min_dist_pursuer = float("inf")
-            min_dist_evader = float("inf")
-
-            # Calculate distance to nearest pursuer
-            for pursuer_pos in all_pursuer_pos:
-                if 0 <= pursuer_pos < self.num_nodes:
-                    try:
-                        # Use self.env.graph instead of self.unwrapped.graph
-                        dist = (
-                            len(nx.shortest_path(self.env.graph, node, pursuer_pos)) - 1
-                        )
-                        min_dist_pursuer = min(min_dist_pursuer, dist)
-                    except nx.NetworkXNoPath:
-                        continue
-
-            # Calculate distance to nearest active evader
-            for evader_pos in all_evader_pos:
-                if 0 <= evader_pos < self.num_nodes:
-                    try:
-                        # Use self.env.graph instead of self.unwrapped.graph
-                        dist = (
-                            len(nx.shortest_path(self.env.graph, node, evader_pos)) - 1
-                        )
-                        min_dist_evader = min(min_dist_evader, dist)
-                    except nx.NetworkXNoPath:
-                        continue
-
-            node_features[node, 6] = (
-                1.0 / (min_dist_pursuer + 1)
-                if min_dist_pursuer != float("inf")
-                else 0.0
-            )
-            node_features[node, 7] = (
-                1.0 / (min_dist_evader + 1) if min_dist_evader != float("inf") else 0.0
-            )
-            max_dist_pursuer = max(
-                max_dist_pursuer,
-                min_dist_pursuer if min_dist_pursuer != float("inf") else 0,
-            )
-            max_dist_evader = max(
-                max_dist_evader,
-                min_dist_evader if min_dist_evader != float("inf") else 0,
-            )
-
-        # # Optional: Normalize by max distance
-        # # if max_dist_pursuer > 0: node_features[:, 6] /= (max_dist_pursuer + 1)
-        # # if max_dist_evader > 0: node_features[:, 7] /= (max_dist_evader + 1)
 
         return node_features
 

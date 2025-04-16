@@ -367,29 +367,32 @@ if __name__ == "__main__":
         "stay_penalty": -0.1,
     }
 
-    # Use Watts-Strogatz for potentially clearer graph layout
-    n_nodes = env_config["num_nodes"]
-    k_neighbors = 4  # Example: connect to 4 nearest neighbors
-    p_rewire = 0.2  # Example: rewire 20% of edges
-    graph_seed = np.random.randint(10000)
-    base_graph = nx.watts_strogatz_graph(
-        n=n_nodes, k=k_neighbors, p=p_rewire, seed=graph_seed
-    )
-    if not nx.is_connected(base_graph):
-        largest_cc = max(nx.connected_components(base_graph), key=len)
-        base_graph = base_graph.subgraph(largest_cc).copy()
-        base_graph = nx.convert_node_labels_to_integers(base_graph)
-        print("Warning: Generated graph was not connected, using largest component.")
+    # --- Start Edit: Generate Grid Graph for Test ---
+    # Use grid graph generation matching the environment's new logic
+    target_n_nodes = env_config["num_nodes"]
+    m = int(np.floor(np.sqrt(target_n_nodes)))
+    n = int(np.ceil(target_n_nodes / m))
+    actual_num_nodes = m * n
 
-    # Update num_nodes in config if graph changed size
-    env_config["num_nodes"] = base_graph.number_of_nodes()
-    # Add graph to config
+    print(f"Test Script: Generating {m}x{n} grid graph ({actual_num_nodes} nodes).")
+    base_graph = nx.grid_2d_graph(m, n)
+    base_graph = nx.convert_node_labels_to_integers(
+        base_graph, first_label=0, ordering="default"
+    )
+
+    # Update num_nodes in config to actual grid size
+    env_config["num_nodes"] = actual_num_nodes
+    # Add graph to config so the env uses this specific instance
     env_config["graph"] = base_graph
+    # Keep a copy for visualization if needed later
+    graph_for_viz = base_graph
+    # --- End Edit ---
 
     # 创建基础环境
     print("Creating base GPE environment...")
+    # Pass the generated graph via config
     base_env = GPE(**env_config, render_mode=None)
-    graph_for_viz = base_env.graph
+    # graph_for_viz = base_env.graph # Already have graph_for_viz from above
     print("Base environment created.")
 
     # 包装环境以支持 GNN
@@ -526,10 +529,11 @@ if __name__ == "__main__":
     # --- 可视化 ---
     # Option 1: Visualize using shortest path (doesn't test GNN model)
     print("\nVisualizing using shortest path (not the trained GNN policy)...")
+    # Ensure visualization uses the SAME graph instance
     viz_env_base = GPE(
-        **env_config,
+        **env_config,  # env_config now contains the grid graph
         render_mode="human",
-        graph=graph_for_viz,  # Use the same graph as training
+        # graph=graph_for_viz, # Already passed via env_config
     )
     visualize_policy(
         model=None,  # Don't pass model if using shortest path
