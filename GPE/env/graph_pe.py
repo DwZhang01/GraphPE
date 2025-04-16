@@ -59,7 +59,7 @@ class GPE(ParallelEnv):
         capture_reward_evader=-20.0,
         escape_reward_evader=100.0,
         escape_reward_pursuer=-100.0,
-        stay_penalty=-0.1,
+        stay_penalty=-1.0,
     ):
         """
         Initialize the GPE environment.
@@ -234,7 +234,7 @@ class GPE(ParallelEnv):
         # Attempt to place evaders in the safe zone
         if len(safe_zone_for_evaders) >= self.num_evaders:
             # Place Evaders in the Safe Zone (Ideal Case)
-            print("Placing evaders in calculated safe zone.")
+            # print("Placing evaders in calculated safe zone.")
             evader_nodes = self.np_random.choice(
                 safe_zone_for_evaders, size=self.num_evaders, replace=False
             )
@@ -447,17 +447,37 @@ class GPE(ParallelEnv):
 
     def _check_safe_arrivals(self):
         """Check if any evaders have reached the safe node."""
+        escape_occurred_this_step = False  # Track if any escape happened
         for evader in self.evaders:
+            # Skip if already captured
             if evader in self.captured_evaders:
                 continue
 
+            # Check if the evader is at the safe node
             if self.agent_positions[evader] == self.safe_node:
+                # Only update rewards/terminations if the agent was active at the start of this step
+                # (i.e., present in the self.rewards dictionary keys)
                 if evader in self.rewards:
                     self.rewards[evader] += self.escape_reward_evader
                     self.terminations[evader] = True
+                    # --- Start Edit: Add escape flag to info ---
+                    self.infos[evader]["escape"] = True
+                    escape_occurred_this_step = True
+                    # --- End Edit ---
+                    # Assign negative reward to pursuers active in this step
                     for pursuer in self.pursuers:
+                        # Check if the pursuer is also active in this step before assigning reward
                         if pursuer in self.rewards:
                             self.rewards[pursuer] += self.escape_reward_pursuer
+
+        # --- Start Edit: Optionally add escape flag to all active agents' infos ---
+        # If an escape happened, you might want all agents to know.
+        # This depends on how you use infos later.
+        # if escape_occurred_this_step:
+        #     for agent in self.agents: # Use current active agents
+        #         if agent in self.infos: # Ensure agent is in the current info dict
+        #              self.infos[agent]["escape_event_occurred"] = True # Use a different key maybe
+        # --- End Edit ---
 
     def _check_termination(self):
         """Check if the overall game should terminate."""

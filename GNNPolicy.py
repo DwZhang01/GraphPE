@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from typing import Dict
+from typing import Dict, List
 from gymnasium.spaces import Dict as GymDict
 from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
@@ -8,7 +8,8 @@ from torch_geometric.nn import (
     SAGEConv,
     GATv2Conv,
     global_mean_pool,
-)  # Or GATv2Conv etc.
+)
+from torch_geometric.data import Data, Batch
 from gymnasium import spaces
 
 # (GNNEnvWrapper class defined above)
@@ -16,108 +17,120 @@ from gymnasium import spaces
 
 class GNNFeatureExtractor(BaseFeaturesExtractor):
     """
-    Feature extractor using GraphSAGE for the GPE environment.
+    Feature extractor using GraphSAGE (or GATv2) for the GPE environment.
     Assumes observation space is the Dict space defined in GNNEnvWrapper.
+    Uses PyG Batching for efficient processing.
     """
 
     def __init__(self, observation_space: GymDict, features_dim: int = 128):
         super().__init__(observation_space, features_dim=features_dim)
 
-        # Extract dimensions from the observation space
         node_feature_dim = observation_space["node_features"].shape[1]
         self.num_nodes = observation_space["node_features"].shape[0]
         hidden_dim = 128
 
-        # Define GNN layers (Example: 3 layers of GATv2)
         self.conv1 = GATv2Conv(node_feature_dim, hidden_dim // 4, heads=4)
         self.conv2 = GATv2Conv(hidden_dim, hidden_dim // 2, heads=2)
         self.conv3 = GATv2Conv(hidden_dim, features_dim, heads=1)
 
         self.batch_norm1 = nn.BatchNorm1d(hidden_dim)
         self.batch_norm2 = nn.BatchNorm1d(hidden_dim)
-
         self.dropout = nn.Dropout(0.1)
         self.relu = nn.ReLU()
-
         self.last_obs = None
 
-        print(f"GNN Feature Extractor Initialized:")
+        print(f"GNN Feature Extractor Initialized (PyG Batching Enabled):")
         print(f"  Input node feature dim: {node_feature_dim}")
         print(f"  Output features dim (shared network): {features_dim}")
 
     def forward(self, observations: Dict[str, torch.Tensor]) -> torch.Tensor:
         self.last_obs = observations
 
-        node_features = observations["node_features"]  # [batch, num_nodes, feat_dim]
-        edge_index = observations["edge_index"]  # [batch, 2, max_edges]
-        agent_node_idx = observations[
-            "agent_node_index"
-        ]  # [batch, 1] <= Likely float32 here
+        node_features = observations["node_features"]
+        edge_indices = observations["edge_index"]
+        agent_node_indices = observations["agent_node_index"]
 
         batch_size = node_features.shape[0]
         device = node_features.device
-        output_features = []
 
-        # Iterate through the batch (simpler for SB3 integration)
+        data_list: List[Data] = []
+        original_agent_indices = []
+
         for i in range(batch_size):
-            x_i = node_features[i]  # [num_nodes, feat_dim]
-            edge_index_i = edge_index[i]  # [2, max_edges]
-            agent_idx_i = int(
-                agent_node_idx[i].item()
-            )  # scalar agent node index, ensure integer
+            x_i = node_features[i]
+            edge_index_i = edge_indices[i]
+            agent_idx_i = int(agent_node_indices[i].item())
+            original_agent_indices.append(agent_idx_i)
 
-            # Explicitly cast edge_index to long
             edge_index_i = edge_index_i.long()
-
-            # Filter out padded edges for this specific graph instance
-            # Assuming padding value is >= num_nodes
             valid_edge_mask_i = (edge_index_i[0, :] < self.num_nodes) & (
                 edge_index_i[1, :] < self.num_nodes
             )
-            filtered_ei_i = edge_index_i[:, valid_edge_mask_i]  # [2, num_valid_edges]
+            filtered_ei_i = edge_index_i[:, valid_edge_mask_i]
 
-            # GNN Pass for the i-th item
-            x = self.conv1(x_i, filtered_ei_i)
-            # Apply BatchNorm correctly (expects [N, C] or [C])
-            # If num_nodes is consistent, BatchNorm1d works. Careful if graphs vary size.
-            if x.shape[0] > 0:  # Avoid BatchNorm on empty graphs if possible
-                # BatchNorm expects [N, C], conv output might be [N, C*heads], need reshape if heads > 1
-                # GAT output is [N, heads * out_channels], flatten for BatchNorm? Or apply per head?
-                # Let's assume GAT handles head concatenation internally for the next layer
-                # Apply BatchNorm on the flattened head dimension if needed, or ensure output dim matches BN dim
-                # Simpler: Apply BN after ReLU often works too. Let's try standard order first.
-                # Ensure dimensions match BatchNorm layer (hidden_dim)
+            data = Data(x=x_i, edge_index=filtered_ei_i, agent_idx_in_graph=agent_idx_i)
+            data_list.append(data)
+
+        try:
+            batch_data = Batch.from_data_list(data_list).to(device)
+        except RuntimeError as e:
+            print(f"Error creating PyG Batch: {e}")
+            return torch.zeros((batch_size, self.features_dim), device=device)
+
+        x = self.conv1(batch_data.x, batch_data.edge_index)
+        if x.shape[0] > 0:
+            try:
                 x = self.batch_norm1(x)
-            x = self.relu(x)
-            x = self.dropout(x)
-
-            x = self.conv2(x, filtered_ei_i)
-            if x.shape[0] > 0:
-                # Ensure dimensions match BatchNorm layer (hidden_dim)
-                x = self.batch_norm2(x)
-            x = self.relu(x)
-            x = self.dropout(x)
-
-            x = self.conv3(x, filtered_ei_i)  # Output: [num_nodes, features_dim]
-
-            # Extract the feature for the agent's node
-            # Handle case where agent_idx might be invalid (e.g., -1 if agent not present)
-            if 0 <= agent_idx_i < self.num_nodes:
-                agent_feature = x[
-                    agent_idx_i
-                ]  # [features_dim] # Indexing now uses integer
-            else:
-                # Handle invalid index - perhaps return zeros?
-                # Ensure the created zero tensor matches the expected features_dim
-                agent_feature = torch.zeros(self.features_dim, device=device)
+            except ValueError as e:
                 print(
-                    f"Warning: Invalid agent_node_idx {agent_idx_i} encountered in batch item {i}."
+                    f"Warning: BatchNorm1d failed (likely due to insufficient batch stats): {e}"
+                )
+        x = self.relu(x)
+        x = self.dropout(x)
+
+        x = self.conv2(x, batch_data.edge_index)
+        if x.shape[0] > 0:
+            try:
+                x = self.batch_norm2(x)
+            except ValueError as e:
+                print(
+                    f"Warning: BatchNorm1d failed (likely due to insufficient batch stats): {e}"
+                )
+        x = self.relu(x)
+        x = self.dropout(x)
+
+        x = self.conv3(x, batch_data.edge_index)
+
+        absolute_agent_indices = []
+        valid_batch_indices = []
+
+        for i in range(batch_size):
+            agent_idx_in_graph_i = original_agent_indices[i]
+            if 0 <= agent_idx_in_graph_i < self.num_nodes:
+                start_node_index = batch_data.ptr[i]
+                absolute_index = start_node_index + agent_idx_in_graph_i
+                absolute_agent_indices.append(absolute_index)
+                valid_batch_indices.append(i)
+            else:
+                print(
+                    f"Warning: Original agent index {agent_idx_in_graph_i} was invalid for batch item {i}. Skipping feature extraction."
                 )
 
-            output_features.append(agent_feature)
+        if absolute_agent_indices:
+            absolute_agent_indices_tensor = torch.tensor(
+                absolute_agent_indices, dtype=torch.long, device=device
+            )
+            selected_features = x[absolute_agent_indices_tensor]
+        else:
+            selected_features = torch.empty((0, self.features_dim), device=device)
 
-        # Stack the features from all items in the batch
-        final_features = torch.stack(output_features)  # [batch_size, features_dim]
+        final_features = torch.zeros((batch_size, self.features_dim), device=device)
+        if selected_features.numel() > 0:
+            valid_batch_indices_tensor = torch.tensor(
+                valid_batch_indices, dtype=torch.long, device=device
+            )
+            final_features[valid_batch_indices_tensor] = selected_features
+
         return final_features
 
 
