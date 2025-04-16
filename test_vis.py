@@ -25,7 +25,7 @@ from stable_baselines3 import PPO
 
 # --- Reused Configuration and Function from test_SB3_api.py ---
 
-MAX_STEP = 50  # Or use the value used during training
+MAX_STEP = 10  # Or use the value used during training
 
 
 def visualize_policy(
