@@ -34,7 +34,7 @@ MAX_STEP = 50
 PI_DIM = 64
 VF_DIM = 64
 FEATURES_DIM = 128
-TOTAL_STEPS = 100000
+TOTAL_STEPS = 10000
 
 
 # Create a callback to track rewards
@@ -195,6 +195,7 @@ def visualize_policy(
     max_steps=50,
     save_animation=True,
     use_shortest_path=True,
+    wrapper_instance=None,
 ):
     """
     Visualizes the execution of the trained policy in the provided GPE environment.
@@ -206,6 +207,7 @@ def visualize_policy(
         max_steps: Maximum steps per episode
         save_animation: Whether to save the visualization as an animation file
         use_shortest_path: Whether using shortest path actions instead of the model
+        wrapper_instance: GNNEnvWrapper instance for generating GNN observations
     """
     print("Starting policy visualization...")
     gif_save_dir = "viz_gif"
@@ -404,7 +406,7 @@ if __name__ == "__main__":
         "capture_reward_evader": -20.0,
         "escape_reward_evader": 50.0,
         "escape_reward_pursuer": -50.0,
-        "stay_penalty": -2.0,
+        "stay_penalty": -5.0,
     }
 
     # --- Start Edit: Generate Grid Graph for Test ---
@@ -506,7 +508,7 @@ if __name__ == "__main__":
         vec_env,
         verbose=1,
         policy_kwargs=policy_kwargs,
-        learning_rate=3e-4,
+        learning_rate=1e-4,
         n_steps=2048,
         batch_size=256,
         n_epochs=20,
@@ -564,38 +566,49 @@ if __name__ == "__main__":
         print("Try ensuring the GNNPolicy class is available in the scope during load.")
         exit()
 
-    # --- 可视化 ---
-    # Option 1: Visualize using shortest path (doesn't test GNN model)
-    print("\nVisualizing using shortest path (not the trained GNN policy)...")
-    # Ensure visualization uses the SAME graph instance
-    viz_env_base = GPE(
-        **env_config,  # env_config now contains the grid graph
-        render_mode="human",
-        # graph=graph_for_viz, # Already passed via env_config
-    )
-    visualize_policy(
-        model=None,  # Don't pass model if using shortest path
-        env=viz_env_base,
-        num_episodes=3,
-        max_steps=MAX_STEP,
-        save_animation=True,
-        use_shortest_path=True,  # Force shortest path
-    )
-    viz_env_base.close()
-
-    # Option 2: Visualize using the loaded GNN model (Requires wrapped env for predict)
-    # print("\nVisualizing trained GNN policy...")
-    # # We need to wrap the visualization env for the model's predict step
-    # viz_env_base_for_gnn = GPE(
-    #     **env_config,
-    #     render_mode="human", # Keep human render mode
-    #     graph=graph_for_viz,
+    # # --- 可视化 ---
+    # # Option 1: Visualize using shortest path (doesn't test GNN model)
+    # print("\nVisualizing using shortest path (not the trained GNN policy)...")
+    # # Ensure visualization uses the SAME graph instance
+    # viz_env_base = GPE(
+    #     **env_config,  # env_config now contains the grid graph
+    #     render_mode="human",
+    #     # graph=graph_for_viz, # Already passed via env_config
     # )
-    # viz_env_wrapped = GNNEnvWrapper(viz_env_base_for_gnn) # Wrap for observation
-    # # Modify visualize_policy to accept the wrapped env for predictions
-    # # OR create a temporary wrapped env inside visualize_policy when needed
-    # # visualize_policy_gnn(loaded_model, viz_env_wrapped, ...) # Needs modification in visualize_policy
-    # print("GNN Policy Visualization requires modifications to visualize_policy function - Skipped.")
+    # visualize_policy(
+    #     model=None,  # Don't pass model if using shortest path
+    #     env=viz_env_base,
+    #     num_episodes=3,
+    #     max_steps=MAX_STEP,
+    #     save_animation=True,
+    #     use_shortest_path=True,  # Force shortest path
+    # )
+    # viz_env_base.close()
+
+    # Option 2: Visualize using the loaded GNN model
+    print("\nVisualizing trained GNN policy...")
+    # Create a base GPE env with rendering enabled using the consistent graph
+    viz_env_base_gnn = GPE(
+        **env_config,  # Use the config with the specific graph
+        render_mode="human",  # Enable rendering
+    )
+    # Create the wrapper linked to this base env, needed for generating GNN observations
+    viz_env_wrapper_gnn = GNNEnvWrapper(viz_env_base_gnn)
+
+    # Call the visualize_policy function (assuming it was updated as per previous steps)
+    visualize_policy(
+        model=loaded_model,  # Pass the loaded GNN model
+        env=viz_env_base_gnn,  # Base env for rendering/stepping
+        wrapper_instance=viz_env_wrapper_gnn,  # Wrapper for getting GNN observations
+        num_episodes=5,  # Number of episodes to show
+        max_steps=MAX_STEP,  # Max steps per episode
+        save_animation=True,  # Save the GIF
+        use_shortest_path=False,  # IMPORTANT: Use the GNN model, not shortest path
+    )
+
+    # Clean up the visualization environment
+    viz_env_base_gnn.close()
+    # --- End Edit ---
 
     # 打印训练摘要
     metrics = reward_callback.get_metrics_summary()
