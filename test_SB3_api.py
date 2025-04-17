@@ -31,6 +31,10 @@ from gymnasium import (
 
 
 MAX_STEP = 50
+PI_DIM = 64
+VF_DIM = 64
+FEATURES_DIM = 128
+TOTAL_STEPS = 10000
 
 
 # Create a callback to track rewards
@@ -191,6 +195,7 @@ def visualize_policy(
     max_steps=50,
     save_animation=True,
     use_shortest_path=True,
+    wrapper_instance=None,
 ):
     """
     Visualizes the execution of the trained policy in the provided GPE environment.
@@ -202,6 +207,7 @@ def visualize_policy(
         max_steps: Maximum steps per episode
         save_animation: Whether to save the visualization as an animation file
         use_shortest_path: Whether using shortest path actions instead of the model
+        wrapper_instance: GNNEnvWrapper instance for generating GNN observations
     """
     print("Starting policy visualization...")
     gif_save_dir = "viz_gif"
@@ -327,7 +333,7 @@ class CaptureDebugCallback(BaseCallback):
         info = self.locals["infos"][0]
         if "capture" in info and info["capture"]:
             self.capture_count += 1
-            print(f"Step {self.n_calls}: Capture! Total: {self.capture_count})")
+            print(f"Step {self.n_calls}: Capture! Total: {self.capture_count}")
             # print(f"当前奖励: {self.locals['rewards'][0]}")
         return True
 
@@ -354,30 +360,30 @@ class DetailedDebugCallback(BaseCallback):
 class EscapeDebugCallback(BaseCallback):
     """
     A custom callback that detects and prints when an escape event occurs.
-    NOTE: Assumes the environment's info dictionary (potentially processed by VecEnv)
-          contains an 'escape' flag.
+    Checks for the 'escape_event' key in the VecEnv's info dictionary.
     """
 
     def __init__(self, verbose=0):
         super().__init__(verbose)
         self.escape_count = 0
-        self.last_escape_step = -1  # Avoid double counting if info persists
+        self.last_escape_step = -1  # Avoid double counting
 
     def _on_step(self):
         # In VecEnv, infos is a list (usually size 1 if num_vec_envs=1)
-        info = self.locals["infos"][0]
+        info = self.locals["infos"][0]  # Get the info dict for this step
 
-        # Check if the 'escape' key exists and is True
-        # The exact structure might depend on VecEnv wrapper, but check top level first
-        if "escape" in info and info["escape"]:
-            # Avoid counting the same event multiple times if info persists across steps within an episode for done envs
+        # --- Start Edit: Check for the new 'escape_event' key ---
+        # Use .get() for safety, in case the key is missing in some steps
+        if info.get("escape_event", False):
+            # --- End Edit ---
+            # Avoid counting the same event multiple times if info structure causes issues
             if self.n_calls != self.last_escape_step:
                 self.escape_count += 1
                 self.last_escape_step = self.n_calls
                 if self.verbose > 0:
+                    # --- Start Edit: Updated print message ---
                     print(f"Step {self.n_calls}: Escape! Total: {self.escape_count}")
-                    # Optionally print reward if helpful
-                    # print(f"  当前奖励: {self.locals['rewards'][0]}")
+                    # --- End Edit ---
 
         # Reset last escape step if the episode is done
         done = self.locals["dones"][0]
@@ -398,9 +404,9 @@ if __name__ == "__main__":
         "p_act": 1,
         "capture_reward_pursuer": 20.0,
         "capture_reward_evader": -20.0,
-        "escape_reward_evader": 100.0,
-        "escape_reward_pursuer": -100.0,
-        "stay_penalty": -1.0,
+        "escape_reward_evader": 50.0,
+        "escape_reward_pursuer": -50.0,
+        "stay_penalty": -5.0,
     }
 
     # --- Start Edit: Generate Grid Graph for Test ---
@@ -459,17 +465,14 @@ if __name__ == "__main__":
         vec_env = ss.concat_vec_envs_v1(
             vec_env,
             num_vec_envs=N_ENVS,
-            num_cpus=N_ENVS,  # Match num_vec_envs or available cores
+            num_cpus=N_ENVS,
             base_class="stable_baselines3",
         )
-        # --- End Edit ---
         print("concat_vec_envs_v1 successful.")
         print("Vectorization successful using Supersuit.")
     except Exception as e:
         print(f"!!! PettingZoo/Supersuit vectorization failed: {e} !!!")
         print("Ensure GNNEnvWrapper correctly implements the ParallelEnv interface.")
-        # --- REMOVED DummyVecEnv Fallback ---
-        # It's not compatible with PettingZoo environments.
         raise  # Re-raise the exception to stop execution
 
     # Reset the vectorized environment
@@ -492,8 +495,8 @@ if __name__ == "__main__":
     # 创建使用 GNN 的 PPO 模型
     policy_kwargs = {
         "features_extractor_class": GNNFeatureExtractor,
-        "features_extractor_kwargs": {"features_dim": 128},
-        "net_arch": [dict(pi=[64, 64], vf=[64, 64])],
+        "features_extractor_kwargs": {"features_dim": FEATURES_DIM},
+        "net_arch": [dict(pi=[PI_DIM, PI_DIM], vf=[VF_DIM, VF_DIM])],
     }
 
     # 确保设备配置正确
@@ -507,10 +510,10 @@ if __name__ == "__main__":
         policy_kwargs=policy_kwargs,
         learning_rate=1e-4,
         n_steps=2048,
-        batch_size=1024,
+        batch_size=256,
         n_epochs=20,
-        gamma=0.99,
-        ent_coef=0.01,
+        gamma=0.95,  # 0.99? 小了关注短期
+        ent_coef=0.05,  # 0.01? 越大越鼓励探索
         gae_lambda=0.95,
         clip_range=0.2,
         device=device,
@@ -530,7 +533,7 @@ if __name__ == "__main__":
     # 训练模型
     print(f"Starting GNN PPO training on device: {model.device}")
     # --- Start Edit: Increase timesteps significantly ---
-    total_training_timesteps = 500000  # Example: Increased further
+    total_training_timesteps = TOTAL_STEPS  # Example: Increased further
     print(f"Training for {total_training_timesteps} timesteps...")
     # --- End Edit ---
     model.learn(total_timesteps=total_training_timesteps, callback=callbacks)
@@ -555,60 +558,57 @@ if __name__ == "__main__":
         print(f"Error: Model file not found at {model_path_load}")
         exit()
 
-    # IMPORTANT: When loading a model with custom policy/features,
-    # specify custom_objects including the policy class and potentially the wrapper.
-    # However, for SB3 PPO, usually just loading works if policy is registered,
-    # but let's load with the policy specified for safety.
-    # We need an env instance with the correct obs space for loading,
-    # but SB3 load() often handles this if policy is known.
-    # If loading fails, you might need to pass `custom_objects={'policy_class': GNNPolicy}`
     try:
-        # Provide the policy class during loading if necessary
-        # For VecEnvs with Dict obs space, SB3 load might need help.
-        # Let's try without env first, it often works.
         loaded_model = PPO.load(model_path_load, device=model.device, policy=GNNPolicy)
-        # If the above fails, try passing a dummy env with the correct spaces:
-        # dummy_env = GNNEnvWrapper(GPE(**env_config))
-        # dummy_vec_env = ss.pettingzoo_env_to_vec_env_v1(dummy_env)
-        # loaded_model = PPO.load(model_path_load, env=dummy_vec_env, device=model.device, custom_objects={'policy_class': GNNPolicy})
         print("Model loaded successfully.")
     except Exception as e:
         print(f"Error loading model: {e}")
         print("Try ensuring the GNNPolicy class is available in the scope during load.")
         exit()
 
-    # --- 可视化 ---
-    # Option 1: Visualize using shortest path (doesn't test GNN model)
-    print("\nVisualizing using shortest path (not the trained GNN policy)...")
-    # Ensure visualization uses the SAME graph instance
-    viz_env_base = GPE(
-        **env_config,  # env_config now contains the grid graph
-        render_mode="human",
-        # graph=graph_for_viz, # Already passed via env_config
-    )
-    visualize_policy(
-        model=None,  # Don't pass model if using shortest path
-        env=viz_env_base,
-        num_episodes=3,
-        max_steps=MAX_STEP,
-        save_animation=True,
-        use_shortest_path=True,  # Force shortest path
-    )
-    viz_env_base.close()
-
-    # Option 2: Visualize using the loaded GNN model (Requires wrapped env for predict)
-    # print("\nVisualizing trained GNN policy...")
-    # # We need to wrap the visualization env for the model's predict step
-    # viz_env_base_for_gnn = GPE(
-    #     **env_config,
-    #     render_mode="human", # Keep human render mode
-    #     graph=graph_for_viz,
+    # # --- 可视化 ---
+    # # Option 1: Visualize using shortest path (doesn't test GNN model)
+    # print("\nVisualizing using shortest path (not the trained GNN policy)...")
+    # # Ensure visualization uses the SAME graph instance
+    # viz_env_base = GPE(
+    #     **env_config,  # env_config now contains the grid graph
+    #     render_mode="human",
+    #     # graph=graph_for_viz, # Already passed via env_config
     # )
-    # viz_env_wrapped = GNNEnvWrapper(viz_env_base_for_gnn) # Wrap for observation
-    # # Modify visualize_policy to accept the wrapped env for predictions
-    # # OR create a temporary wrapped env inside visualize_policy when needed
-    # # visualize_policy_gnn(loaded_model, viz_env_wrapped, ...) # Needs modification in visualize_policy
-    # print("GNN Policy Visualization requires modifications to visualize_policy function - Skipped.")
+    # visualize_policy(
+    #     model=None,  # Don't pass model if using shortest path
+    #     env=viz_env_base,
+    #     num_episodes=3,
+    #     max_steps=MAX_STEP,
+    #     save_animation=True,
+    #     use_shortest_path=True,  # Force shortest path
+    # )
+    # viz_env_base.close()
+
+    # Option 2: Visualize using the loaded GNN model
+    print("\nVisualizing trained GNN policy...")
+    # Create a base GPE env with rendering enabled using the consistent graph
+    viz_env_base_gnn = GPE(
+        **env_config,  # Use the config with the specific graph
+        render_mode="human",  # Enable rendering
+    )
+    # Create the wrapper linked to this base env, needed for generating GNN observations
+    viz_env_wrapper_gnn = GNNEnvWrapper(viz_env_base_gnn)
+
+    # Call the visualize_policy function (assuming it was updated as per previous steps)
+    visualize_policy(
+        model=loaded_model,  # Pass the loaded GNN model
+        env=viz_env_base_gnn,  # Base env for rendering/stepping
+        wrapper_instance=viz_env_wrapper_gnn,  # Wrapper for getting GNN observations
+        num_episodes=5,  # Number of episodes to show
+        max_steps=MAX_STEP,  # Max steps per episode
+        save_animation=True,  # Save the GIF
+        use_shortest_path=False,  # IMPORTANT: Use the GNN model, not shortest path
+    )
+
+    # Clean up the visualization environment
+    viz_env_base_gnn.close()
+    # --- End Edit ---
 
     # 打印训练摘要
     metrics = reward_callback.get_metrics_summary()

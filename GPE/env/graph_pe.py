@@ -7,6 +7,7 @@ import networkx as nx
 from pettingzoo import ParallelEnv
 from pettingzoo import AECEnv
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 
 
 class GPE(ParallelEnv):
@@ -57,9 +58,9 @@ class GPE(ParallelEnv):
         p_act=1,
         capture_reward_pursuer=20.0,
         capture_reward_evader=-20.0,
-        escape_reward_evader=100.0,
-        escape_reward_pursuer=-100.0,
-        stay_penalty=-1.0,
+        escape_reward_evader=50.0,
+        escape_reward_pursuer=-50.0,
+        stay_penalty=-2.0,
     ):
         """
         Initialize the GPE environment.
@@ -449,34 +450,42 @@ class GPE(ParallelEnv):
         """Check if any evaders have reached the safe node."""
         escape_occurred_this_step = False  # Track if any escape happened
         for evader in self.evaders:
-            # Skip if already captured
             if evader in self.captured_evaders:
                 continue
 
-            # Check if the evader is at the safe node
             if self.agent_positions[evader] == self.safe_node:
-                # Only update rewards/terminations if the agent was active at the start of this step
-                # (i.e., present in the self.rewards dictionary keys)
                 if evader in self.rewards:
                     self.rewards[evader] += self.escape_reward_evader
                     self.terminations[evader] = True
-                    # --- Start Edit: Add escape flag to info ---
-                    self.infos[evader]["escape"] = True
-                    escape_occurred_this_step = True
-                    # --- End Edit ---
-                    # Assign negative reward to pursuers active in this step
+                    # Keep the specific flag if needed for other purposes
+                    # self.infos[evader]["escape"] = True
+                    escape_occurred_this_step = True  # Mark that an escape happened
+
                     for pursuer in self.pursuers:
-                        # Check if the pursuer is also active in this step before assigning reward
                         if pursuer in self.rewards:
                             self.rewards[pursuer] += self.escape_reward_pursuer
 
-        # --- Start Edit: Optionally add escape flag to all active agents' infos ---
-        # If an escape happened, you might want all agents to know.
-        # This depends on how you use infos later.
-        # if escape_occurred_this_step:
-        #     for agent in self.agents: # Use current active agents
-        #         if agent in self.infos: # Ensure agent is in the current info dict
-        #              self.infos[agent]["escape_event_occurred"] = True # Use a different key maybe
+        # --- Start Edit: Add a general flag accessible by VecEnv ---
+        # If an escape happened, add a flag that's easier for the VecEnv wrapper to see.
+        # We add it to the info dict of the *first* active agent, as VecEnv wrappers
+        # often pick one agent's info or merge them.
+        if escape_occurred_this_step and self.agents:  # Ensure there are active agents
+            first_active_agent = self.agents[0]
+            if (
+                first_active_agent in self.infos
+            ):  # Make sure the agent is in the current infos dict
+                self.infos[first_active_agent]["escape_event"] = True
+            else:
+                # If the first agent somehow isn't in infos (shouldn't happen), create it
+                self.infos[first_active_agent] = {"escape_event": True}
+
+            # Optional: Add to all agents' infos if you prefer consistency,
+            # but adding to one is usually enough for VecEnv detection.
+            # for agent in self.agents:
+            #     if agent in self.infos:
+            #         self.infos[agent]["escape_event"] = True
+            #     else:
+            #         self.infos[agent] = {"escape_event": True}
         # --- End Edit ---
 
     def _check_termination(self):
@@ -500,10 +509,7 @@ class GPE(ParallelEnv):
         return self.action_spaces[agent]
 
     def render(self):
-        """Render the environment state.
-        Displays the current state in the same figure window, creating animation when called in a loop.
-        Captured evaders are shown in yellow.
-        """
+        """Render the environment state with a fixed layout and static legend."""
         if self.render_mode is None:
             return
 
@@ -519,127 +525,167 @@ class GPE(ParallelEnv):
         )
 
         if self.render_mode == "human":
+            # --- Define Static Legend Elements ---
+            legend_handles = [
+                Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="w",
+                    label="Pursuer",
+                    markerfacecolor="r",
+                    markersize=10,
+                    linestyle="None",
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="w",
+                    label="Evader",
+                    markerfacecolor="b",
+                    markersize=10,
+                    linestyle="None",
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="w",
+                    label="Captured",
+                    markerfacecolor="y",
+                    markersize=8,
+                    linestyle="None",
+                ),  # Smaller marker
+                Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="w",
+                    label="Safe",
+                    markerfacecolor="g",
+                    markersize=12,
+                    linestyle="None",
+                ),  # Larger marker
+            ]
+            legend_labels = [h.get_label() for h in legend_handles]
+            # --- End Static Legend Definition ---
+
             if not hasattr(self, "fig") or not plt.fignum_exists(self.fig.number):
                 self.fig = plt.figure(figsize=(12, 8))
                 self.ax = self.fig.add_subplot(111)
+                # --- Start Edit: Adjust subplot position ONCE ---
+                # Leave space on the right for the legend (e.g., 20%)
+                self.fig.subplots_adjust(left=0.05, right=0.80, bottom=0.05, top=0.95)
+                # --- End Edit ---
+
+                # Calculate layout only once per episode start
                 if not hasattr(self, "pos_layout") or self.timestep == 0:
-                    try:
-                        m, n = self.graph.graph["dim"]
-                        self.pos_layout = {
-                            node: (data["pos"][1], -data["pos"][0])
-                            for node, data in self.graph.nodes(data=True)
-                        }
-                        print("Using grid layout for rendering.")
-                    except KeyError:
-                        print("Using spring layout for rendering.")
-                        self.pos_layout = nx.spring_layout(
-                            self.graph, k=1, iterations=50
-                        )
+                    print("Calculating spring layout for rendering...")
+                    self.pos_layout = nx.spring_layout(
+                        self.graph, seed=42, k=0.5, iterations=50
+                    )
 
             plt.figure(self.fig.number)
             self.ax.clear()
 
+            # Set consistent axis limits based on the initial layout
+            if not hasattr(self, "render_xlim"):
+                x_coords, y_coords = zip(*self.pos_layout.values())
+                x_min, x_max = min(x_coords), max(x_coords)
+                y_min, y_max = min(y_coords), max(y_coords)
+                x_margin = (x_max - x_min) * 0.05
+                y_margin = (y_max - y_min) * 0.05
+                self.render_xlim = (x_min - x_margin, x_max + x_margin)
+                self.render_ylim = (y_min - y_margin, y_max + y_margin)
+            self.ax.set_xlim(self.render_xlim)
+            self.ax.set_ylim(self.render_ylim)
+
+            # Draw graph structure
             nx.draw_networkx_nodes(
                 self.graph,
                 self.pos_layout,
                 ax=self.ax,
                 node_color="lightgray",
-                node_size=500,
+                node_size=400,
             )
             nx.draw_networkx_edges(
-                self.graph, self.pos_layout, ax=self.ax, edge_color="gray", width=1
+                self.graph,
+                self.pos_layout,
+                ax=self.ax,
+                edge_color="gray",
+                width=0.75,
+                alpha=0.6,
             )
-            nx.draw_networkx_labels(
-                self.graph, self.pos_layout, ax=self.ax, font_size=8
-            )
+            # nx.draw_networkx_labels(...) # Keep labels off for less clutter
 
-            pursuer_handles = []
+            # Draw agents WITHOUT individual labels for the legend
+            # Pursuers
             for pursuer in self.pursuers:
                 if pursuer in self.agent_positions:
                     position = self.agent_positions[pursuer]
-                    (handle,) = self.ax.plot(
+                    self.ax.plot(
                         self.pos_layout[position][0],
                         self.pos_layout[position][1],
                         "ro",
-                        markersize=15,
-                        label=pursuer,
+                        markersize=10,  # Use marker size consistent with legend
                     )
-                    pursuer_handles.append(handle)
+                    # Keep annotations if desired
                     self.ax.annotate(
                         pursuer,
                         (self.pos_layout[position][0], self.pos_layout[position][1]),
-                        xytext=(10, 10),
+                        xytext=(8, 8),
                         textcoords="offset points",
                         color="red",
-                        fontsize=8,
+                        fontsize=7,
                     )
 
-            evader_handles = []
-            captured_evader_handles = []
+            # Evaders (Active and Captured)
             for evader in self.evaders:
                 if evader in self.agent_positions:
                     position = self.agent_positions[evader]
                     is_captured = evader in self.captured_evaders
-
                     color = "yo" if is_captured else "bo"
-                    label_suffix = " (Captured)" if is_captured else ""
-                    marker_size = 12 if is_captured else 15
+                    marker_size = 8 if is_captured else 10  # Match legend marker size
 
-                    (handle,) = self.ax.plot(
+                    self.ax.plot(
                         self.pos_layout[position][0],
                         self.pos_layout[position][1],
                         color,
                         markersize=marker_size,
-                        label=f"{evader}{label_suffix}",
+                    )
+                    # Keep annotations
+                    anno_text = f"{evader}{' (C)' if is_captured else ''}"
+                    anno_color = "orange" if is_captured else "blue"
+                    self.ax.annotate(
+                        anno_text,
+                        (self.pos_layout[position][0], self.pos_layout[position][1]),
+                        xytext=(8, -12),
+                        textcoords="offset points",
+                        color=anno_color,
+                        fontsize=7,
+                        ha="left",
                     )
 
-                    if is_captured:
-                        captured_evader_handles.append(handle)
-                        self.ax.annotate(
-                            f"{evader}\n(Captured)",
-                            (
-                                self.pos_layout[position][0],
-                                self.pos_layout[position][1],
-                            ),
-                            xytext=(10, -15),
-                            textcoords="offset points",
-                            color="orange",
-                            fontsize=7,
-                            ha="left",
-                        )
-                    else:
-                        evader_handles.append(handle)
-                        self.ax.annotate(
-                            evader,
-                            (
-                                self.pos_layout[position][0],
-                                self.pos_layout[position][1],
-                            ),
-                            xytext=(10, -10),
-                            textcoords="offset points",
-                            color="blue",
-                            fontsize=8,
-                            ha="left",
-                        )
-
+            # Safe Node
             if self.safe_node is not None:
-                (safe_handle,) = self.ax.plot(
+                self.ax.plot(
                     self.pos_layout[self.safe_node][0],
                     self.pos_layout[self.safe_node][1],
                     "go",
-                    markersize=20,
-                    label="Safe Node",
+                    markersize=12,  # Match legend marker size
                 )
+                # Keep annotation
                 self.ax.annotate(
                     "SAFE",
                     (
                         self.pos_layout[self.safe_node][0],
                         self.pos_layout[self.safe_node][1],
                     ),
-                    xytext=(0, 20),
+                    xytext=(0, 15),
                     textcoords="offset points",
                     color="green",
-                    fontsize=10,
+                    fontsize=9,
                     ha="center",
                 )
 
@@ -647,49 +693,16 @@ class GPE(ParallelEnv):
             self.ax.set_xticks([])
             self.ax.set_yticks([])
 
-            all_handles = pursuer_handles + evader_handles + captured_evader_handles
-            if hasattr(self, "safe_handle"):
-                all_handles.append(safe_handle)
-            valid_handles = [
-                h
-                for h in all_handles
-                if h.get_label() and not h.get_label().startswith("_")
-            ]
-            labels = [h.get_label() for h in valid_handles]
-
-            max_legend_entries = 15
-            if len(valid_handles) > max_legend_entries:
-                priority_handles = pursuer_handles + evader_handles
-                if hasattr(self, "safe_handle"):
-                    priority_handles.append(safe_handle)
-                priority_handles += captured_evader_handles[
-                    : max_legend_entries - len(priority_handles)
-                ]
-                valid_handles = [
-                    h
-                    for h in priority_handles
-                    if h.get_label() and not h.get_label().startswith("_")
-                ]
-                labels = [h.get_label() for h in valid_handles]
-                if len(all_handles) > len(valid_handles):
-                    from matplotlib.lines import Line2D
-
-                    dummy_handle = Line2D(
-                        [0], [0], marker="None", linestyle="None", label="..."
-                    )
-                    valid_handles.append(dummy_handle)
-                    labels.append("...")
-
+            # --- Start Edit: Draw the STATIC Legend ---
             self.ax.legend(
-                valid_handles,
-                labels,
+                handles=legend_handles,
+                labels=legend_labels,
                 loc="upper left",
                 bbox_to_anchor=(1.02, 1),
                 borderaxespad=0.0,
-                fontsize="small",
+                fontsize="medium",
             )
-
-            self.fig.tight_layout(rect=[0, 0, 0.85, 1])
+            # --- End Edit ---
 
             plt.pause(0.5)
 
@@ -697,8 +710,14 @@ class GPE(ParallelEnv):
         """Close the rendering window."""
         if hasattr(self, "fig") and plt.fignum_exists(self.fig.number):
             plt.close(self.fig.number)
+            # --- Start Edit: Reset layout and limits on close ---
             if hasattr(self, "pos_layout"):
                 delattr(self, "pos_layout")
+            if hasattr(self, "render_xlim"):
+                delattr(self, "render_xlim")
+            if hasattr(self, "render_ylim"):
+                delattr(self, "render_ylim")
+            # --- End Edit ---
 
     def shortest_path_action(self, agent):
         """
