@@ -31,6 +31,10 @@ from gymnasium import (
 
 
 MAX_STEP = 50
+PI_DIM = 64
+VF_DIM = 64
+FEATURES_DIM = 128
+TOTAL_STEPS = 100000
 
 
 # Create a callback to track rewards
@@ -327,7 +331,7 @@ class CaptureDebugCallback(BaseCallback):
         info = self.locals["infos"][0]
         if "capture" in info and info["capture"]:
             self.capture_count += 1
-            print(f"Step {self.n_calls}: Capture! Total: {self.capture_count})")
+            print(f"Step {self.n_calls}: Capture! Total: {self.capture_count}")
             # print(f"当前奖励: {self.locals['rewards'][0]}")
         return True
 
@@ -354,30 +358,30 @@ class DetailedDebugCallback(BaseCallback):
 class EscapeDebugCallback(BaseCallback):
     """
     A custom callback that detects and prints when an escape event occurs.
-    NOTE: Assumes the environment's info dictionary (potentially processed by VecEnv)
-          contains an 'escape' flag.
+    Checks for the 'escape_event' key in the VecEnv's info dictionary.
     """
 
     def __init__(self, verbose=0):
         super().__init__(verbose)
         self.escape_count = 0
-        self.last_escape_step = -1  # Avoid double counting if info persists
+        self.last_escape_step = -1  # Avoid double counting
 
     def _on_step(self):
         # In VecEnv, infos is a list (usually size 1 if num_vec_envs=1)
-        info = self.locals["infos"][0]
+        info = self.locals["infos"][0]  # Get the info dict for this step
 
-        # Check if the 'escape' key exists and is True
-        # The exact structure might depend on VecEnv wrapper, but check top level first
-        if "escape" in info and info["escape"]:
-            # Avoid counting the same event multiple times if info persists across steps within an episode for done envs
+        # --- Start Edit: Check for the new 'escape_event' key ---
+        # Use .get() for safety, in case the key is missing in some steps
+        if info.get("escape_event", False):
+            # --- End Edit ---
+            # Avoid counting the same event multiple times if info structure causes issues
             if self.n_calls != self.last_escape_step:
                 self.escape_count += 1
                 self.last_escape_step = self.n_calls
                 if self.verbose > 0:
+                    # --- Start Edit: Updated print message ---
                     print(f"Step {self.n_calls}: Escape! Total: {self.escape_count}")
-                    # Optionally print reward if helpful
-                    # print(f"  当前奖励: {self.locals['rewards'][0]}")
+                    # --- End Edit ---
 
         # Reset last escape step if the episode is done
         done = self.locals["dones"][0]
@@ -398,9 +402,9 @@ if __name__ == "__main__":
         "p_act": 1,
         "capture_reward_pursuer": 20.0,
         "capture_reward_evader": -20.0,
-        "escape_reward_evader": 100.0,
-        "escape_reward_pursuer": -100.0,
-        "stay_penalty": -1.0,
+        "escape_reward_evader": 50.0,
+        "escape_reward_pursuer": -50.0,
+        "stay_penalty": -2.0,
     }
 
     # --- Start Edit: Generate Grid Graph for Test ---
@@ -459,17 +463,14 @@ if __name__ == "__main__":
         vec_env = ss.concat_vec_envs_v1(
             vec_env,
             num_vec_envs=N_ENVS,
-            num_cpus=N_ENVS,  # Match num_vec_envs or available cores
+            num_cpus=N_ENVS,
             base_class="stable_baselines3",
         )
-        # --- End Edit ---
         print("concat_vec_envs_v1 successful.")
         print("Vectorization successful using Supersuit.")
     except Exception as e:
         print(f"!!! PettingZoo/Supersuit vectorization failed: {e} !!!")
         print("Ensure GNNEnvWrapper correctly implements the ParallelEnv interface.")
-        # --- REMOVED DummyVecEnv Fallback ---
-        # It's not compatible with PettingZoo environments.
         raise  # Re-raise the exception to stop execution
 
     # Reset the vectorized environment
@@ -492,8 +493,8 @@ if __name__ == "__main__":
     # 创建使用 GNN 的 PPO 模型
     policy_kwargs = {
         "features_extractor_class": GNNFeatureExtractor,
-        "features_extractor_kwargs": {"features_dim": 128},
-        "net_arch": [dict(pi=[64, 64], vf=[128, 128])],
+        "features_extractor_kwargs": {"features_dim": FEATURES_DIM},
+        "net_arch": [dict(pi=[PI_DIM, PI_DIM], vf=[VF_DIM, VF_DIM])],
     }
 
     # 确保设备配置正确
@@ -505,12 +506,12 @@ if __name__ == "__main__":
         vec_env,
         verbose=1,
         policy_kwargs=policy_kwargs,
-        learning_rate=1e-4,
+        learning_rate=3e-4,
         n_steps=2048,
-        batch_size=1024,
+        batch_size=256,
         n_epochs=20,
-        gamma=0.99,
-        ent_coef=0.01,
+        gamma=0.95,  # 0.99? 小了关注短期
+        ent_coef=0.05,  # 0.01? 越大越鼓励探索
         gae_lambda=0.95,
         clip_range=0.2,
         device=device,
@@ -530,7 +531,7 @@ if __name__ == "__main__":
     # 训练模型
     print(f"Starting GNN PPO training on device: {model.device}")
     # --- Start Edit: Increase timesteps significantly ---
-    total_training_timesteps = 500000  # Example: Increased further
+    total_training_timesteps = TOTAL_STEPS  # Example: Increased further
     print(f"Training for {total_training_timesteps} timesteps...")
     # --- End Edit ---
     model.learn(total_timesteps=total_training_timesteps, callback=callbacks)
@@ -555,22 +556,8 @@ if __name__ == "__main__":
         print(f"Error: Model file not found at {model_path_load}")
         exit()
 
-    # IMPORTANT: When loading a model with custom policy/features,
-    # specify custom_objects including the policy class and potentially the wrapper.
-    # However, for SB3 PPO, usually just loading works if policy is registered,
-    # but let's load with the policy specified for safety.
-    # We need an env instance with the correct obs space for loading,
-    # but SB3 load() often handles this if policy is known.
-    # If loading fails, you might need to pass `custom_objects={'policy_class': GNNPolicy}`
     try:
-        # Provide the policy class during loading if necessary
-        # For VecEnvs with Dict obs space, SB3 load might need help.
-        # Let's try without env first, it often works.
         loaded_model = PPO.load(model_path_load, device=model.device, policy=GNNPolicy)
-        # If the above fails, try passing a dummy env with the correct spaces:
-        # dummy_env = GNNEnvWrapper(GPE(**env_config))
-        # dummy_vec_env = ss.pettingzoo_env_to_vec_env_v1(dummy_env)
-        # loaded_model = PPO.load(model_path_load, env=dummy_vec_env, device=model.device, custom_objects={'policy_class': GNNPolicy})
         print("Model loaded successfully.")
     except Exception as e:
         print(f"Error loading model: {e}")

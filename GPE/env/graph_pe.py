@@ -57,9 +57,9 @@ class GPE(ParallelEnv):
         p_act=1,
         capture_reward_pursuer=20.0,
         capture_reward_evader=-20.0,
-        escape_reward_evader=100.0,
-        escape_reward_pursuer=-100.0,
-        stay_penalty=-1.0,
+        escape_reward_evader=50.0,
+        escape_reward_pursuer=-50.0,
+        stay_penalty=-2.0,
     ):
         """
         Initialize the GPE environment.
@@ -449,34 +449,42 @@ class GPE(ParallelEnv):
         """Check if any evaders have reached the safe node."""
         escape_occurred_this_step = False  # Track if any escape happened
         for evader in self.evaders:
-            # Skip if already captured
             if evader in self.captured_evaders:
                 continue
 
-            # Check if the evader is at the safe node
             if self.agent_positions[evader] == self.safe_node:
-                # Only update rewards/terminations if the agent was active at the start of this step
-                # (i.e., present in the self.rewards dictionary keys)
                 if evader in self.rewards:
                     self.rewards[evader] += self.escape_reward_evader
                     self.terminations[evader] = True
-                    # --- Start Edit: Add escape flag to info ---
-                    self.infos[evader]["escape"] = True
-                    escape_occurred_this_step = True
-                    # --- End Edit ---
-                    # Assign negative reward to pursuers active in this step
+                    # Keep the specific flag if needed for other purposes
+                    # self.infos[evader]["escape"] = True
+                    escape_occurred_this_step = True  # Mark that an escape happened
+
                     for pursuer in self.pursuers:
-                        # Check if the pursuer is also active in this step before assigning reward
                         if pursuer in self.rewards:
                             self.rewards[pursuer] += self.escape_reward_pursuer
 
-        # --- Start Edit: Optionally add escape flag to all active agents' infos ---
-        # If an escape happened, you might want all agents to know.
-        # This depends on how you use infos later.
-        # if escape_occurred_this_step:
-        #     for agent in self.agents: # Use current active agents
-        #         if agent in self.infos: # Ensure agent is in the current info dict
-        #              self.infos[agent]["escape_event_occurred"] = True # Use a different key maybe
+        # --- Start Edit: Add a general flag accessible by VecEnv ---
+        # If an escape happened, add a flag that's easier for the VecEnv wrapper to see.
+        # We add it to the info dict of the *first* active agent, as VecEnv wrappers
+        # often pick one agent's info or merge them.
+        if escape_occurred_this_step and self.agents:  # Ensure there are active agents
+            first_active_agent = self.agents[0]
+            if (
+                first_active_agent in self.infos
+            ):  # Make sure the agent is in the current infos dict
+                self.infos[first_active_agent]["escape_event"] = True
+            else:
+                # If the first agent somehow isn't in infos (shouldn't happen), create it
+                self.infos[first_active_agent] = {"escape_event": True}
+
+            # Optional: Add to all agents' infos if you prefer consistency,
+            # but adding to one is usually enough for VecEnv detection.
+            # for agent in self.agents:
+            #     if agent in self.infos:
+            #         self.infos[agent]["escape_event"] = True
+            #     else:
+            #         self.infos[agent] = {"escape_event": True}
         # --- End Edit ---
 
     def _check_termination(self):

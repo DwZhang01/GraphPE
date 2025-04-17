@@ -22,12 +22,12 @@ class GNNFeatureExtractor(BaseFeaturesExtractor):
     Uses PyG Batching for efficient processing.
     """
 
-    def __init__(self, observation_space: GymDict, features_dim: int = 128):
+    def __init__(self, observation_space: GymDict, features_dim: int = 64):
         super().__init__(observation_space, features_dim=features_dim)
 
         node_feature_dim = observation_space["node_features"].shape[1]
         self.num_nodes = observation_space["node_features"].shape[0]
-        hidden_dim = 128
+        hidden_dim = features_dim
 
         self.conv1 = GATv2Conv(node_feature_dim, hidden_dim // 4, heads=4)
         self.conv2 = GATv2Conv(hidden_dim, hidden_dim // 2, heads=2)
@@ -87,7 +87,6 @@ class GNNFeatureExtractor(BaseFeaturesExtractor):
                 )
         x = self.relu(x)
         x = self.dropout(x)
-
         x = self.conv2(x, batch_data.edge_index)
         if x.shape[0] > 0:
             try:
@@ -121,6 +120,9 @@ class GNNFeatureExtractor(BaseFeaturesExtractor):
                 absolute_agent_indices, dtype=torch.long, device=device
             )
             selected_features = x[absolute_agent_indices_tensor]
+            # global_features = global_mean_pool(x, batch_data.batch)  # 全局池化
+            # selected_features = torch.cat([selected_features, global_features], dim=1)
+            # 调整 features_dim 包含全局特征，例如 32（节点特征）+ 32（全局特征）= 64
         else:
             selected_features = torch.empty((0, self.features_dim), device=device)
 
@@ -144,9 +146,9 @@ class GNNPolicy(ActorCriticPolicy):
         observation_space: spaces.Space,
         action_space: spaces.Space,
         lr_schedule,
-        net_arch=None,  # Optional: Define sizes for actor/critic MLP heads
+        net_arch=None,
         activation_fn=nn.ReLU,
-        features_dim=128,  # <<<< Match features_dim here with GNNFeatureExtractor
+        features_dim=64,
         *args,
         **kwargs,
     ):
