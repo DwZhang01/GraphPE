@@ -8,7 +8,7 @@
         "num_nodes": 50,
         "num_pursuers": 2,
         "num_evaders": 1,
-        "max_steps": 10,
+        "max_steps": 30,
         "layout_algorithm": "kamada_kawai",
         "p_act": 1,
         "capture_reward_pursuer": 10.0,
@@ -29,7 +29,7 @@
         "ENT_COEF": 0.01,
         "VF_COEF": 1.0,
         "LEARNING_RATE": 1e-4,
-        "N_ENVS": 50,
+        "N_ENVS": 14,
         "N_CPUS": 14,
         "PREFERRED_DEVICE": "cuda",
         "MODEL_SAVE_NAME": "gnn_policy",
@@ -37,8 +37,8 @@
         "PPO_VERBOSE": 1
     },
     "visualization": {
-        "MAX_STEPS": 10,
-        "NUM_EPISODES": 5,
+        "MAX_STEPS": 30,
+        "NUM_EPISODES": 3,
         "SAVE_ANIMATION": true,
         "RENDER_MODE": "human",
         "USE_SHORTEST_PATH": false
