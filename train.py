@@ -233,6 +233,7 @@ if __name__ == "__main__":
         n_epochs=train_config.get("N_EPOCHS", 10),
         gamma=train_config.get("GAMMA", 0.99),
         ent_coef=train_config.get("ENT_COEF", 0.01),
+        vf_coef=train_config.get("VF_COEF", 1.0),
         gae_lambda=train_config.get("GAE_LAMBDA", 0.95),
         clip_range=train_config.get("CLIP_RANGE", 0.2),
         device=device,

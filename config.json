@@ -1,6 +1,6 @@
 {
     "neural_network": {
-        "PI_HIDDEN_DIMS": [64, 64],
+        "PI_HIDDEN_DIMS": [128, 128],
         "VF_HIDDEN_DIMS": [128, 128],
         "FEATURES_DIM": 128
     },
@@ -19,16 +19,17 @@
         "allow_stay": false
     },
     "training": {
-        "TOTAL_STEPS": 100000,
+        "TOTAL_STEPS": 10000000,
         "N_STEPS": 2048,
         "BATCH_SIZE": 512,
-        "N_EPOCHS": 10,
+        "N_EPOCHS": 30,
         "GAMMA": 0.99,
         "GAE_LAMBDA": 0.95,
         "CLIP_RANGE": 0.2,
         "ENT_COEF": 0.01,
-        "LEARNING_RATE": 3e-4,
-        "N_ENVS": 14,
+        "VF_COEF": 1.0,
+        "LEARNING_RATE": 1e-4,
+        "N_ENVS": 50,
         "N_CPUS": 14,
         "PREFERRED_DEVICE": "cuda",
         "MODEL_SAVE_NAME": "gnn_policy",
