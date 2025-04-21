@@ -61,6 +61,7 @@ class GPE(ParallelEnv):
         escape_reward_pursuer=-50.0,
         stay_penalty=-2.0,
         layout_algorithm="spring",
+        allow_stay: bool = False,
     ):
         """
         Initialize the GPE environment.
@@ -81,11 +82,13 @@ class GPE(ParallelEnv):
             escape_reward_evader: Reward for evader when reaching safe node.
             escape_reward_pursuer: Reward for pursuers when evader reaches safe node.
             layout_algorithm (str): Layout algorithm for rendering ('spring', 'kamada_kawai', 'grid', 'spectral'). Defaults to 'spring'.
+            allow_stay (bool): If False (default), agents must move to a neighbor. If True, staying in the current node is a valid action.
         """
         super().__init__()
         self.np_random = np.random.RandomState(seed)
         self.p_act = p_act
         self.layout_algorithm = layout_algorithm
+        self.allow_stay = allow_stay
         self.grid_m = None
         self.grid_n = None
 
@@ -318,8 +321,17 @@ class GPE(ParallelEnv):
         )
 
         action_mask = np.zeros(self.num_nodes, dtype=np.float32)
-        valid_action_indices = [position] + neighbors
-        action_mask[valid_action_indices] = 1.0
+        if self.allow_stay:
+            valid_action_indices = [position] + neighbors
+        else:
+            valid_action_indices = neighbors
+        valid_action_indices = [
+            idx for idx in valid_action_indices if 0 <= idx < self.num_nodes
+        ]
+        if valid_action_indices:
+            action_mask[valid_action_indices] = 1.0
+        elif self.allow_stay and (0 <= position < self.num_nodes):
+            action_mask[position] = 1.0
 
         if agent.startswith("evader"):
             observation_vector = np.concatenate(
@@ -386,11 +398,28 @@ class GPE(ParallelEnv):
                 or effective_action in self.graph.neighbors(current_position)
             )
             if is_valid_move:
-                next_positions[agent] = effective_action
+                # Check if the intended action was valid based on allow_stay
+                # (This adds robustness in case an invalid 'stay' action gets through somehow)
+                is_staying = effective_action == current_position
+                if (
+                    not self.allow_stay
+                    and is_staying
+                    and list(self.graph.neighbors(current_position))
+                ):
+                    # If staying is not allowed AND the agent chose to stay AND neighbors exist
+                    self.infos[agent]["invalid_action"] = True
+                    # Keep agent at current_position implicitly by not updating next_positions[agent] below
+                    # Or explicitly: next_positions[agent] = current_position
+                else:
+                    # Otherwise, the move (or stay if allowed) is fine
+                    next_positions[agent] = effective_action
             else:
+                # Original invalid move logic (e.g., moving to non-neighbor)
                 self.infos[agent]["invalid_action"] = True
 
-            if effective_action == current_position:
+            # Apply stay penalty only if staying is allowed and occurred
+            if self.allow_stay and effective_action == current_position:
+                # Apply penalty only if staying is a valid option and the agent chose it
                 self.rewards[agent] += self.stay_penalty
 
         self.agent_positions = next_positions

@@ -46,20 +46,20 @@ train_config = config.get("training", {})
 vis_config = config.get("visualization", {})
 
 # Validate required keys (example)
-required_env_keys = ["num_nodes", "num_pursuers", "num_evaders", "max_steps"]
+required_env_keys_base = ["num_pursuers", "num_evaders", "max_steps", "allow_stay"]
 required_nn_keys = ["FEATURES_DIM", "PI_HIDDEN_DIMS", "VF_HIDDEN_DIMS"]
 required_train_keys = ["TOTAL_STEPS", "N_STEPS", "BATCH_SIZE"]
 required_vis_keys = ["MAX_STEPS", "NUM_EPISODES"]
 
 # Simple validation (can be made more robust)
 if (
-    not all(k in env_config for k in required_env_keys)
+    not all(k in env_config for k in required_env_keys_base)
     or not all(k in nn_config for k in required_nn_keys)
     or not all(k in train_config for k in required_train_keys)
     or not all(k in vis_config for k in required_vis_keys)
 ):
     print("Error: Missing required keys in config.json.")
-    print(f"  Need in environment: {required_env_keys}")
+    print(f"  Need in environment: {required_env_keys_base}")
     print(f"  Need in neural_network: {required_nn_keys}")
     print(f"  Need in training: {required_train_keys}")
     print(f"  Need in visualization: {required_vis_keys}")

@@ -15,7 +15,8 @@
         "capture_reward_evader": -10.0,
         "escape_reward_evader": 20.0,
         "escape_reward_pursuer": -20.0,
-        "stay_penalty": -5.0
+        "stay_penalty": -5.0,
+        "allow_stay": false
     },
     "training": {
         "TOTAL_STEPS": 100000,

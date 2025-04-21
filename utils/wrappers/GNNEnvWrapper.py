@@ -47,6 +47,9 @@ class GNNEnvWrapper(ParallelEnv):
             f"GNNWrapper: Using {self.feature_dim} node features: {self._node_feature_list}"
         )
 
+        # {{ edit_1: Store allow_stay from base env }}
+        self.allow_stay = self.env.allow_stay
+
         self.render_mode = self.env.render_mode
 
         self._observation_space = GymDict(
@@ -216,9 +219,10 @@ class GNNEnvWrapper(ParallelEnv):
         return node_features
 
     def _get_action_mask(self, agent):
-        """Gets the valid action mask for the agent directly."""
+        """Gets the valid action mask for the agent, respecting self.allow_stay."""
         action_mask = np.zeros(self.num_nodes, dtype=np.float32)
         if self.env.graph is None:
+            print("Warning: Action mask calculation skipped, graph is None.")
             return action_mask
 
         current_pos = self.env.agent_positions.get(agent, -1)
@@ -227,22 +231,35 @@ class GNNEnvWrapper(ParallelEnv):
             try:
                 if current_pos in self.env.graph:
                     neighbors = list(self.env.graph.neighbors(current_pos))
-                    valid_action_indices = [current_pos] + neighbors
+                    if self.allow_stay:
+                        valid_action_indices = [current_pos] + neighbors
+                    else:
+                        valid_action_indices = neighbors
+                        if not valid_action_indices:
+                            print(
+                                f"Warning: Agent {agent} at {current_pos} has no neighbors and allow_stay=False. Forcing stay."
+                            )
+                            valid_action_indices = [current_pos]
+
                     valid_action_indices = [
                         idx for idx in valid_action_indices if 0 <= idx < self.num_nodes
                     ]
+
                     if valid_action_indices:
                         action_mask[valid_action_indices] = 1.0
+                    elif self.allow_stay:
+                        action_mask[current_pos] = 1.0
                 else:
                     print(
                         f"Warning: Agent {agent} position {current_pos} not in graph nodes."
                     )
-                    action_mask[current_pos] = 1.0  # Allow stay
+                    if self.allow_stay and 0 <= current_pos < self.num_nodes:
+                        action_mask[current_pos] = 1.0
             except (nx.NetworkXError, KeyError) as e:
                 print(
                     f"Warning: Error getting neighbors for {agent} at {current_pos}: {e}"
                 )
-                if 0 <= current_pos < self.num_nodes:
+                if self.allow_stay and 0 <= current_pos < self.num_nodes:
                     action_mask[current_pos] = 1.0
         return action_mask
 
