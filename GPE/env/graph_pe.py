@@ -61,6 +61,7 @@ class GPE(ParallelEnv):
         escape_reward_evader=50.0,
         escape_reward_pursuer=-50.0,
         stay_penalty=-2.0,
+        layout_algorithm="spring",
     ):
         """
         Initialize the GPE environment.
@@ -81,10 +82,14 @@ class GPE(ParallelEnv):
             capture_reward_evader: Reward for evader when being captured.
             escape_reward_evader: Reward for evader when reaching safe node.
             escape_reward_pursuer: Reward for pursuers when evader reaches safe node.
+            layout_algorithm (str): Layout algorithm for rendering ('spring', 'kamada_kawai', 'grid', 'spectral'). Defaults to 'spring'.
         """
         super().__init__()
         self.np_random = np.random.RandomState(seed)
         self.p_act = p_act
+        self.layout_algorithm = layout_algorithm
+        self.grid_m = None
+        self.grid_n = None
 
         self.custom_graph = graph
         if self.custom_graph is None:
@@ -92,13 +97,15 @@ class GPE(ParallelEnv):
             n = int(np.ceil(num_nodes / m))
             actual_num_nodes = m * n
             self.num_nodes = actual_num_nodes
+            self.grid_m = m
+            self.grid_n = n
             print(
-                f"GPE Init: Grid graph detected. Actual num_nodes set to {self.num_nodes}"
+                f"GPE Init: Grid graph generated ({m}x{n}). Actual num_nodes set to {self.num_nodes}"
             )
         else:
             self.num_nodes = self.custom_graph.number_of_nodes()
             print(
-                f"GPE Init: Custom graph provided. Actual num_nodes set to {self.num_nodes}"
+                f"GPE Init: Custom graph provided. Actual num_nodes set to {self.num_nodes}. Grid layout might require manual m, n if not inferred."
             )
 
         self.num_pursuers = num_pursuers
@@ -574,34 +581,89 @@ class GPE(ParallelEnv):
             if not hasattr(self, "fig") or not plt.fignum_exists(self.fig.number):
                 self.fig = plt.figure(figsize=(12, 8))
                 self.ax = self.fig.add_subplot(111)
-                # --- Start Edit: Adjust subplot position ONCE ---
-                # Leave space on the right for the legend (e.g., 20%)
                 self.fig.subplots_adjust(left=0.05, right=0.80, bottom=0.05, top=0.95)
-                # --- End Edit ---
 
-                # Calculate layout only once per episode start
+                # --- Start Edit: Calculate layout based on self.layout_algorithm ---
+                # Calculate layout only once per episode start or if missing
                 if not hasattr(self, "pos_layout") or self.timestep == 0:
-                    print("Calculating spring layout for rendering...")
-                    self.pos_layout = nx.spring_layout(
-                        self.graph, seed=42, k=0.5, iterations=50
+                    print(
+                        f"Calculating '{self.layout_algorithm}' layout for rendering..."
                     )
+                    try:
+                        if self.layout_algorithm == "spring":
+                            self.pos_layout = nx.spring_layout(
+                                self.graph,
+                                seed=42,
+                                k=0.5,
+                                iterations=50,  # Default spring params
+                            )
+                        elif self.layout_algorithm == "kamada_kawai":
+                            self.pos_layout = nx.kamada_kawai_layout(self.graph)
+                        elif self.layout_algorithm == "spectral":
+                            self.pos_layout = nx.spectral_layout(self.graph)
+                        elif self.layout_algorithm == "grid":
+                            if self.grid_m is not None and self.grid_n is not None:
+                                # Recreate grid positions based on node ID and stored m, n
+                                # Assumes nodes are 0 to m*n-1, ordered row by row typically
+                                self.pos_layout = {
+                                    node: (
+                                        node % self.grid_n,
+                                        self.grid_m - 1 - node // self.grid_n,
+                                    )
+                                    for node in self.graph.nodes()
+                                }
+                                print(
+                                    f"  Using stored grid dimensions: {self.grid_m}x{self.grid_n}"
+                                )
+                            else:
+                                print(
+                                    f"  Warning: 'grid' layout selected but m/n dimensions not available. Falling back to spring layout."
+                                )
+                                self.pos_layout = nx.spring_layout(
+                                    self.graph, seed=42, k=0.5, iterations=50
+                                )
+                        # Add other layouts here if needed (e.g., 'circular', 'shell')
+                        # elif self.layout_algorithm == 'circular':
+                        #    self.pos_layout = nx.circular_layout(self.graph)
+                        else:
+                            print(
+                                f"  Warning: Unknown layout_algorithm '{self.layout_algorithm}'. Falling back to spring layout."
+                            )
+                            self.pos_layout = nx.spring_layout(
+                                self.graph, seed=42, k=0.5, iterations=50
+                            )
+                    except Exception as e:
+                        print(
+                            f"  Error calculating layout '{self.layout_algorithm}': {e}. Falling back to spring layout."
+                        )
+                        self.pos_layout = nx.spring_layout(
+                            self.graph, seed=42, k=0.5, iterations=50
+                        )  # Fallback on any error
 
-            plt.figure(self.fig.number)
-            self.ax.clear()
+            # --- End Edit ---
 
-            # Set consistent axis limits based on the initial layout
-            if not hasattr(self, "render_xlim"):
+            # --- Start Edit: Consistent axis limits calculation moved slightly ---
+            # Set consistent axis limits based on the calculated layout (do this *after* layout calculation)
+            if (
+                not hasattr(self, "render_xlim") or self.timestep == 0
+            ):  # Check if limits need recalculating (e.g., first step)
                 x_coords, y_coords = zip(*self.pos_layout.values())
                 x_min, x_max = min(x_coords), max(x_coords)
                 y_min, y_max = min(y_coords), max(y_coords)
-                x_margin = (x_max - x_min) * 0.05
-                y_margin = (y_max - y_min) * 0.05
+                x_margin = (
+                    (x_max - x_min) * 0.05 if x_max > x_min else 0.1
+                )  # Add small margin even if flat
+                y_margin = (y_max - y_min) * 0.05 if y_max > y_min else 0.1
                 self.render_xlim = (x_min - x_margin, x_max + x_margin)
                 self.render_ylim = (y_min - y_margin, y_max + y_margin)
+
+            plt.figure(self.fig.number)  # Ensure we're using the correct figure
+            self.ax.clear()
             self.ax.set_xlim(self.render_xlim)
             self.ax.set_ylim(self.render_ylim)
+            # --- End Edit ---
 
-            # Draw graph structure
+            # Draw graph structure (uses self.pos_layout calculated above)
             nx.draw_networkx_nodes(
                 self.graph,
                 self.pos_layout,
@@ -693,7 +755,7 @@ class GPE(ParallelEnv):
             self.ax.set_xticks([])
             self.ax.set_yticks([])
 
-            # --- Start Edit: Draw the STATIC Legend ---
+            # Draw the STATIC Legend
             self.ax.legend(
                 handles=legend_handles,
                 labels=legend_labels,
@@ -702,7 +764,6 @@ class GPE(ParallelEnv):
                 borderaxespad=0.0,
                 fontsize="medium",
             )
-            # --- End Edit ---
 
             plt.pause(0.5)
 
@@ -710,14 +771,13 @@ class GPE(ParallelEnv):
         """Close the rendering window."""
         if hasattr(self, "fig") and plt.fignum_exists(self.fig.number):
             plt.close(self.fig.number)
-            # --- Start Edit: Reset layout and limits on close ---
+            # Reset layout and limits on close
             if hasattr(self, "pos_layout"):
                 delattr(self, "pos_layout")
             if hasattr(self, "render_xlim"):
                 delattr(self, "render_xlim")
             if hasattr(self, "render_ylim"):
                 delattr(self, "render_ylim")
-            # --- End Edit ---
 
     def shortest_path_action(self, agent):
         """

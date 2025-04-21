@@ -1,0 +1,44 @@
+{
+    "neural_network": {
+        "PI_HIDDEN_DIMS": [64, 64],
+        "VF_HIDDEN_DIMS": [128, 128],
+        "FEATURES_DIM": 128
+    },
+    "environment": {
+        "num_nodes": 50,
+        "num_pursuers": 2,
+        "num_evaders": 1,
+        "max_steps": 50,
+        "layout_algorithm": "kamada_kawai",
+        "p_act": 1,
+        "capture_reward_pursuer": 20.0,
+        "capture_reward_evader": -20.0,
+        "escape_reward_evader": 50.0,
+        "escape_reward_pursuer": -50.0,
+        "stay_penalty": -5.0
+    },
+    "training": {
+        "TOTAL_STEPS": 4000,
+        "N_STEPS": 2048,
+        "BATCH_SIZE": 512,
+        "N_EPOCHS": 10,
+        "GAMMA": 0.99,
+        "GAE_LAMBDA": 0.95,
+        "CLIP_RANGE": 0.2,
+        "ENT_COEF": 0.01,
+        "LEARNING_RATE": 3e-4,
+        "N_ENVS": 1,
+        "N_CPUS": 1,
+        "PREFERRED_DEVICE": "auto",
+        "MODEL_SAVE_NAME": "gnn_policy",
+        "CALLBACK_VERBOSE": 1,
+        "PPO_VERBOSE": 1
+    },
+    "visualization": {
+        "MAX_STEPS": 50,
+        "NUM_EPISODES": 5,
+        "SAVE_ANIMATION": true,
+        "RENDER_MODE": "human",
+        "USE_SHORTEST_PATH": false
+    }
+}
