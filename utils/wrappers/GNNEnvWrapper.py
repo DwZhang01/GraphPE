@@ -34,11 +34,18 @@ class GNNEnvWrapper(ParallelEnv):
         self.num_nodes = self.env.num_nodes
         self.max_edges = self.num_nodes * self.num_nodes
 
-        # --- Start Edit: Reduce feature_dim (removed degree feature, index 4) ---
-        self.feature_dim = (
-            4  # Features: safe_node, pursuer_here, evader_here, current_agent
+        # Define the node features being used
+        self._node_feature_list = [
+            "is_safe_node",
+            "pursuer_count",
+            "active_evader_count",
+            "is_current_agent_pos",
+        ]
+        # Calculate feature dimension based on the list
+        self.feature_dim = len(self._node_feature_list)
+        print(
+            f"GNNWrapper: Using {self.feature_dim} node features: {self._node_feature_list}"
         )
-        # --- End Edit ---
 
         self.render_mode = self.env.render_mode
 
@@ -73,9 +80,7 @@ class GNNEnvWrapper(ParallelEnv):
         self.possible_agents = self.env.possible_agents
         self._current_graph_pyg = None
         self.padded_edge_index = None
-        # --- Start Edit: Remove distance attribute ---
         # self.all_pairs_shortest_path_lengths = None # Removed
-        # --- End Edit ---
 
     # --- Implement Required ParallelEnv Methods ---
 
@@ -170,7 +175,7 @@ class GNNEnvWrapper(ParallelEnv):
             self.padded_edge_index = torch.cat([edge_index_long, padding], dim=1)
 
     def _create_node_features(self, agent):
-        """Creates the node feature matrix X (without distance and degree features)."""
+        """Creates the node feature matrix X based on self._node_feature_list."""
         if self.env.graph is None:
             raise RuntimeError("Cannot create node features: graph is None.")
 
@@ -180,30 +185,33 @@ class GNNEnvWrapper(ParallelEnv):
         current_agent_pos = agent_positions.get(agent, -1)
         captured_evaders = self.env.captured_evaders
 
-        # Feature Index Map (New):
-        # 0: Is Safe Node
-        # 1: Pursuer Count Here
-        # 2: Active Evader Count Here
-        # 3: Is Current Agent Position
+        # Get indices from the defined list
+        try:
+            safe_node_idx = self._node_feature_list.index("is_safe_node")
+            pursuer_count_idx = self._node_feature_list.index("pursuer_count")
+            evader_count_idx = self._node_feature_list.index("active_evader_count")
+            current_agent_idx = self._node_feature_list.index("is_current_agent_pos")
+        except ValueError as e:
+            raise RuntimeError(f"Feature name mismatch in _create_node_features: {e}")
 
-        # 0. Safe node
+        # 0. Is Safe Node
         if safe_node is not None and 0 <= safe_node < self.num_nodes:
-            node_features[safe_node, 0] = 1.0
+            node_features[safe_node, safe_node_idx] = 1.0
 
         # 1. & 2. Agent positions (Count)
         for other_agent, pos in agent_positions.items():
             if 0 <= pos < self.num_nodes:
                 if other_agent.startswith("pursuer"):
-                    node_features[pos, 1] += 1.0  # Count pursuers at node
+                    node_features[pos, pursuer_count_idx] += 1.0
                 elif (
                     other_agent.startswith("evader")
                     and other_agent not in captured_evaders
                 ):
-                    node_features[pos, 2] += 1.0  # Count active evaders at node
+                    node_features[pos, evader_count_idx] += 1.0
 
-        # 3. Current agent position
+        # 3. Is Current Agent Position
         if 0 <= current_agent_pos < self.num_nodes:
-            node_features[current_agent_pos, 3] = 1.0
+            node_features[current_agent_pos, current_agent_idx] = 1.0
 
         return node_features
 

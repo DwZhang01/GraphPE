@@ -33,14 +33,15 @@ class GNNFeatureExtractor(BaseFeaturesExtractor):
         self.conv2 = GATv2Conv(hidden_dim, hidden_dim // 2, heads=2)
         self.conv3 = GATv2Conv(hidden_dim, features_dim, heads=1)
 
-        self.batch_norm1 = nn.BatchNorm1d(hidden_dim)
-        self.batch_norm2 = nn.BatchNorm1d(hidden_dim)
+        self.norm1 = nn.LayerNorm(hidden_dim)
+        self.norm2 = nn.LayerNorm(hidden_dim)
         self.dropout = nn.Dropout(0.1)
         self.relu = nn.ReLU()
         self.last_obs = None
 
         print(f"GNN Feature Extractor Initialized (PyG Batching Enabled):")
         print(f"  Input node feature dim: {node_feature_dim}")
+        print(f"  Using LayerNorm instead of BatchNorm1d.")
         print(f"  Output features dim (shared network): {features_dim}")
 
     def forward(self, observations: Dict[str, torch.Tensor]) -> torch.Tensor:
@@ -79,22 +80,12 @@ class GNNFeatureExtractor(BaseFeaturesExtractor):
 
         x = self.conv1(batch_data.x, batch_data.edge_index)
         if x.shape[0] > 0:
-            try:
-                x = self.batch_norm1(x)
-            except ValueError as e:
-                print(
-                    f"Warning: BatchNorm1d failed (likely due to insufficient batch stats): {e}"
-                )
+            x = self.norm1(x)
         x = self.relu(x)
         x = self.dropout(x)
         x = self.conv2(x, batch_data.edge_index)
         if x.shape[0] > 0:
-            try:
-                x = self.batch_norm2(x)
-            except ValueError as e:
-                print(
-                    f"Warning: BatchNorm1d failed (likely due to insufficient batch stats): {e}"
-                )
+            x = self.norm2(x)
         x = self.relu(x)
         x = self.dropout(x)
 
@@ -148,15 +139,12 @@ class GNNPolicy(ActorCriticPolicy):
         lr_schedule,
         net_arch=None,
         activation_fn=nn.ReLU,
-        features_dim=64,
         *args,
         **kwargs,
     ):
-        # Disable MLP extractor and use our GNN extractor
-        kwargs["features_extractor_class"] = GNNFeatureExtractor
-        # Ensure features_dim passed here matches the one used in GNNFeatureExtractor init
-        kwargs["features_extractor_kwargs"] = {"features_dim": features_dim}
-        # Let ActorCriticPolicy handle shared network setup if needed
+        if "features_extractor_class" not in kwargs:
+            kwargs["features_extractor_class"] = GNNFeatureExtractor
+
         kwargs["share_features_extractor"] = True  # Usually True
 
         super().__init__(

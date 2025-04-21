@@ -2,6 +2,10 @@ import os
 import time
 from datetime import datetime
 import numpy as np
+
+import matplotlib
+
+matplotlib.use("Agg")  # Force non-interactive backend for saving files reliably
 import matplotlib.pyplot as plt
 import torch
 import imageio  # Make sure imageio is installed

@@ -81,19 +81,33 @@ class MARLRewardCallback(BaseCallback):
                 self.episode_rewards.append(self._episode_total_reward)
                 self.episode_capture_counts.append(self._episode_capture_count)
 
-                # Log metrics (optional, integrates with SB3 logger)
-                if self.logger:
-                    self.logger.record(
-                        "rollout/ep_len_mean", np.mean(self.episode_lengths[-100:])
-                    )  # Mean of last 100 eps
-                    self.logger.record(
-                        "rollout/ep_rew_mean", np.mean(self.episode_rewards[-100:])
+                # Log metrics using SB3 logger (integrates with TensorBoard etc.)
+                if self.logger is not None:
+                    # Log smoothed/averaged values for cleaner graphs
+                    # Calculate mean over last 100 episodes, or fewer if less than 100 total
+                    ep_len_mean = (
+                        np.mean(self.episode_lengths[-100:])
+                        if self.episode_lengths
+                        else 0
                     )
-                    self.logger.record(
-                        "rollout/ep_captures_mean",
-                        np.mean(self.episode_capture_counts[-100:]),
+                    ep_rew_mean = (
+                        np.mean(self.episode_rewards[-100:])
+                        if self.episode_rewards
+                        else 0
                     )
+                    ep_cap_mean = (
+                        np.mean(self.episode_capture_counts[-100:])
+                        if self.episode_capture_counts
+                        else 0
+                    )
+
+                    self.logger.record("rollout/ep_len_mean", ep_len_mean)
+                    self.logger.record("rollout/ep_rew_mean", ep_rew_mean)
+                    self.logger.record("rollout/ep_captures_mean", ep_cap_mean)
                     self.logger.record("rollout/episodes", self.episodes)
+                    # Optionally log raw values too, perhaps less frequently
+                    # self.logger.record("rollout/ep_reward_raw", self._episode_total_reward)
+                    # self.logger.record("rollout/ep_length_raw", self._current_episode_steps)
 
                 if self.verbose > 0:
                     print(

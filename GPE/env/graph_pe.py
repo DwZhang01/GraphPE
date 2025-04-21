@@ -46,7 +46,6 @@ class GPE(ParallelEnv):
     def __init__(
         self,
         num_nodes=100,
-        num_edges=200,
         num_pursuers=5,
         num_evaders=7,
         capture_distance=1,
@@ -68,7 +67,6 @@ class GPE(ParallelEnv):
 
         Args:
             num_nodes: Number of nodes in the graph.
-            num_edges: Approximate number of edges.
             num_pursuers: Number of pursuer agents.
             num_evaders: Number of evader agents.
             capture_distance: Distance for capture (1=adjacent).
@@ -393,7 +391,7 @@ class GPE(ParallelEnv):
                 self.infos[agent]["invalid_action"] = True
 
             if effective_action == current_position:
-                self.rewards[agent] += -self.stay_penalty
+                self.rewards[agent] += self.stay_penalty
 
         self.agent_positions = next_positions
 
@@ -593,7 +591,6 @@ class GPE(ParallelEnv):
                         if self.layout_algorithm == "spring":
                             self.pos_layout = nx.spring_layout(
                                 self.graph,
-                                seed=42,
                                 k=0.5,
                                 iterations=50,  # Default spring params
                             )
@@ -620,7 +617,7 @@ class GPE(ParallelEnv):
                                     f"  Warning: 'grid' layout selected but m/n dimensions not available. Falling back to spring layout."
                                 )
                                 self.pos_layout = nx.spring_layout(
-                                    self.graph, seed=42, k=0.5, iterations=50
+                                    self.graph, k=0.5, iterations=50
                                 )
                         # Add other layouts here if needed (e.g., 'circular', 'shell')
                         # elif self.layout_algorithm == 'circular':
@@ -630,14 +627,14 @@ class GPE(ParallelEnv):
                                 f"  Warning: Unknown layout_algorithm '{self.layout_algorithm}'. Falling back to spring layout."
                             )
                             self.pos_layout = nx.spring_layout(
-                                self.graph, seed=42, k=0.5, iterations=50
-                            )
+                                self.graph, k=0.5, iterations=50
+                            )  # Fallback on any error
                     except Exception as e:
                         print(
                             f"  Error calculating layout '{self.layout_algorithm}': {e}. Falling back to spring layout."
                         )
                         self.pos_layout = nx.spring_layout(
-                            self.graph, seed=42, k=0.5, iterations=50
+                            self.graph, k=0.5, iterations=50
                         )  # Fallback on any error
 
             # --- End Edit ---
