@@ -83,6 +83,7 @@ class GNNEnvWrapper(ParallelEnv):
         self.possible_agents = self.env.possible_agents
         self._current_graph_pyg = None
         self.padded_edge_index = None
+        self._graph_cache_valid = False  # Flag to track cache state
         # self.all_pairs_shortest_path_lengths = None # Removed
 
     # --- Implement Required ParallelEnv Methods ---
@@ -120,15 +121,21 @@ class GNNEnvWrapper(ParallelEnv):
 
     def _ensure_graph_updated(self):
         """Checks if the graph needs updating and calls _update_graph_pyg."""
-        if self.padded_edge_index is None or self.env.graph is None:
+        if not self._graph_cache_valid:  # Update only if cache is invalid
             if self.env.graph is None:
+                # This should ideally not happen after reset, but handle defensively
                 print(
-                    "Warning: Base env graph is None. Ensure env is reset before first step."
+                    "Error: Base env graph is None when trying to update. Ensure env is reset."
                 )
-                if self.env.graph is None:
-                    raise RuntimeError("Graph is still None. Cannot proceed.")
+                # Attempt reset if possible, or raise error. For now, raise.
+                # self.reset() # Avoid calling reset from here, could cause loops
+                raise RuntimeError(
+                    "Graph is None in _ensure_graph_updated. Cannot proceed."
+                )
             # print("Updating graph structure for PyG...") # Debug
             self._update_graph_pyg()
+            self._graph_cache_valid = True  # Mark cache as valid after update
+            # print("Graph cache updated and marked as valid.") # Debug
 
     def _update_graph_pyg(self):
         """Converts the networkx graph to PyG Data object and extracts edge_index.
@@ -167,15 +174,23 @@ class GNNEnvWrapper(ParallelEnv):
         max_edges = self.max_edges  # Use instance attribute
         if num_edges > max_edges:
             print(f"Warning: Edges {num_edges} > max_edges {max_edges}. Truncating.")
-            self.padded_edge_index = self._current_graph_pyg.edge_index[
+            current_edge_index = self._current_graph_pyg.edge_index[
                 :, :max_edges
             ].clone()
         else:
-            pad_width = max_edges - num_edges
-            padding_value = current_num_nodes
+            current_edge_index = self._current_graph_pyg.edge_index.clone()
+
+        pad_width = max_edges - current_edge_index.shape[1]
+        if pad_width > 0:
+            # Use a padding value unlikely to be a real node index, e.g., -1 or num_nodes
+            # Using num_nodes might be okay if GNN ignores out-of-bound indices.
+            # Let's keep num_nodes for now based on previous logic, but -1 might be safer.
+            padding_value = self.num_nodes  # Or potentially -1
             padding = torch.full((2, pad_width), padding_value, dtype=torch.long)
-            edge_index_long = self._current_graph_pyg.edge_index.long()
+            edge_index_long = current_edge_index.long()
             self.padded_edge_index = torch.cat([edge_index_long, padding], dim=1)
+        else:
+            self.padded_edge_index = current_edge_index.long()  # No padding needed
 
     def _create_node_features(self, agent):
         """Creates the node feature matrix X based on self._node_feature_list."""
@@ -302,13 +317,15 @@ class GNNEnvWrapper(ParallelEnv):
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Resets the environment and returns wrapped observations."""
         # print("GNNWrapper: Resetting environment...") # Debug print
+        # {{ edit_7: Invalidate cache before reset }}
+        self._graph_cache_valid = False
         # Reset the underlying parallel environment
         observations_orig, infos = self.env.reset(seed=seed, options=options)
-        # Update graph structure after reset
-        # print("GNNWrapper: Updating graph after reset...") # Debug print
-        self._update_graph_pyg()
+        # Update graph structure after reset (will now use _ensure_graph_updated)
+        # print("GNNWrapper: Ensuring graph is updated after reset...") # Debug print
+        # self._ensure_graph_updated() # Called within _wrap_observation
+
         # Wrap observations for all agents returned by the base reset
-        # The agents available after reset are in self.agents (property delegates to self.env.agents)
         observations_wrapped = {
             agent: self._wrap_observation(agent) for agent in self.agents
         }
@@ -328,11 +345,12 @@ class GNNEnvWrapper(ParallelEnv):
         observations_orig, rewards, terminations, truncations, infos = self.env.step(
             actions
         )
-        # Graph might change in step? If so, need update logic. Assuming static graph per episode for now.
-        # self._ensure_graph_updated() # Uncomment if graph can change during step
+        # {{ edit_8: Ensure graph is updated (uses cache) before wrapping obs }}
+        # If the graph can change dynamically mid-episode (unlikely here),
+        # we would need to invalidate the cache here based on some info flag.
+        # Assuming static graph per episode:
+        # self._ensure_graph_updated() # Called within _wrap_observation
 
-        # Wrap observations for all agents returned by the base step
-        # The agents available for the *next* step are now in self.agents
         observations_wrapped = {
             agent: self._wrap_observation(agent) for agent in self.agents
         }

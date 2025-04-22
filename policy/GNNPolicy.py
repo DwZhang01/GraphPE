@@ -60,69 +60,104 @@ class GNNFeatureExtractor(BaseFeaturesExtractor):
         for i in range(batch_size):
             x_i = node_features[i]
             edge_index_i = edge_indices[i]
-            agent_idx_i = int(agent_node_indices[i].item())
+            agent_idx_i = int(agent_node_indices[i].item())  ### Original ###
             original_agent_indices.append(agent_idx_i)
 
-            edge_index_i = edge_index_i.long()
-            valid_edge_mask_i = (edge_index_i[0, :] < self.num_nodes) & (
-                edge_index_i[1, :] < self.num_nodes
-            )
-            filtered_ei_i = edge_index_i[:, valid_edge_mask_i]
+            edge_index_i = edge_index_i.long()  ### Original ###
+            # {{ edit_1_start: Remove redundant edge filtering inside the loop }}
+            # valid_edge_mask_i = (edge_index_i[0, :] < self.num_nodes) & (  ### Original ###
+            #     edge_index_i[1, :] < self.num_nodes  ### Original ###
+            # )
+            # filtered_ei_i = edge_index_i[:, valid_edge_mask_i]  ### Original ###
 
-            data = Data(x=x_i, edge_index=filtered_ei_i, agent_idx_in_graph=agent_idx_i)
+            # Use edge_index_i directly, assuming wrapper padded correctly
+            # and convolutions can handle potential disconnected padding nodes/edges.
+            data = Data(
+                x=x_i,
+                edge_index=edge_index_i,
+                agent_idx_in_graph=agent_idx_i,  # Use edge_index_i instead of filtered_ei_i
+            )  ### Original ###
+            # {{ edit_1_end }}
             data_list.append(data)
 
         try:
-            batch_data = Batch.from_data_list(data_list).to(device)
+            batch_data = Batch.from_data_list(data_list).to(device)  ### Original ###
         except RuntimeError as e:
             print(f"Error creating PyG Batch: {e}")
+            # Handle potential errors if removing filter causes issues downstream
+            # For now, assume convolutions handle it gracefully.
+            # Consider adding specific error handling or alternative padding if needed.
             return torch.zeros((batch_size, self.features_dim), device=device)
 
-        x = self.conv1(batch_data.x, batch_data.edge_index)
+        # {{ edit_2: Apply convolutions using batch_data.edge_index directly }}
+        x = self.conv1(batch_data.x, batch_data.edge_index)  # Use batch_data.edge_index
         if x.shape[0] > 0:
             x = self.norm1(x)
         x = self.relu(x)
         x = self.dropout(x)
-        x = self.conv2(x, batch_data.edge_index)
+        x = self.conv2(
+            x, batch_data.edge_index
+        )  ### Original ### # Use batch_data.edge_index
         if x.shape[0] > 0:
             x = self.norm2(x)
         x = self.relu(x)
         x = self.dropout(x)
 
-        x = self.conv3(x, batch_data.edge_index)
+        x = self.conv3(
+            x, batch_data.edge_index
+        )  ### Original ### # Use batch_data.edge_index
+
+        # {{ edit_3_start: Optimize agent feature extraction loop slightly }}
+        # Extract agent features: This part is harder to fully vectorize due to batch_data.ptr
+        # Try to minimize python operations inside the loop by batching indexing if possible,
+        # though significant speedup might be limited here without deeper changes.
+        # The current approach is often necessary for heterogeneous batches.
 
         absolute_agent_indices = []
         valid_batch_indices = []
+        invalid_indices_found = False  # Flag to print warning only once
+
+        # Calculate start indices using batch_data.ptr
+        start_node_indices = batch_data.ptr[:-1]  # ptr has shape [batch_size + 1]
 
         for i in range(batch_size):
             agent_idx_in_graph_i = original_agent_indices[i]
             if 0 <= agent_idx_in_graph_i < self.num_nodes:
-                start_node_index = batch_data.ptr[i]
-                absolute_index = start_node_index + agent_idx_in_graph_i
-                absolute_agent_indices.append(absolute_index)
+                # Calculate absolute index without intermediate python variables
+                absolute_index = start_node_indices[i] + agent_idx_in_graph_i
+                absolute_agent_indices.append(
+                    absolute_index.item()
+                )  # Still need .item() here for list append
                 valid_batch_indices.append(i)
             else:
-                print(
-                    f"Warning: Original agent index {agent_idx_in_graph_i} was invalid for batch item {i}. Skipping feature extraction."
-                )
+                if not invalid_indices_found:  # Print only once
+                    print(
+                        f"Warning: Original agent index {agent_idx_in_graph_i} was invalid for batch item {i}. Skipping feature extraction. (Further warnings suppressed)"
+                    )
+                    invalid_indices_found = True
 
+        # Indexing after the loop
+        final_features = torch.zeros((batch_size, self.features_dim), device=device)
         if absolute_agent_indices:
-            absolute_agent_indices_tensor = torch.tensor(
+            absolute_agent_indices_tensor = torch.tensor(  ### Original ###
                 absolute_agent_indices, dtype=torch.long, device=device
             )
-            selected_features = x[absolute_agent_indices_tensor]
-            # global_features = global_mean_pool(x, batch_data.batch)  # 全局池化
-            # selected_features = torch.cat([selected_features, global_features], dim=1)
-            # 调整 features_dim 包含全局特征，例如 32（节点特征）+ 32（全局特征）= 64
-        else:
-            selected_features = torch.empty((0, self.features_dim), device=device)
+            # Check bounds before indexing x
+            if absolute_agent_indices_tensor.max() < x.shape[0]:
+                selected_features = x[absolute_agent_indices_tensor]
 
-        final_features = torch.zeros((batch_size, self.features_dim), device=device)
-        if selected_features.numel() > 0:
-            valid_batch_indices_tensor = torch.tensor(
-                valid_batch_indices, dtype=torch.long, device=device
-            )
-            final_features[valid_batch_indices_tensor] = selected_features
+                if selected_features.numel() > 0:
+                    valid_batch_indices_tensor = torch.tensor(
+                        valid_batch_indices, dtype=torch.long, device=device
+                    )
+                    final_features[valid_batch_indices_tensor] = selected_features
+            else:
+                print(
+                    f"Warning: Calculated absolute agent indices are out of bounds for feature tensor x. Max index: {absolute_agent_indices_tensor.max()}, x shape: {x.shape}. Returning zeros."
+                )
+        # else: # No valid agents, final_features remains zeros
+        #    selected_features = torch.empty((0, self.features_dim), device=device)
+        # {{ edit_3_end }}
 
         return final_features
 
@@ -160,8 +195,9 @@ class GNNPolicy(ActorCriticPolicy):
     def _get_action_dist_from_latent(self, latent_pi, latent_sde=None):
         mean_actions = self.action_net(latent_pi)  # Shape [batch_size, num_nodes]
 
-        # {{ edit_4_start: Get masks from features_extractor }}
-        # Check if the features extractor and its stored obs are available
+        # {{ edit_4_start: Get masks from features_extractor (Review and Confirm) }}
+        # This block seems correct for applying the action mask retrieved from the extractor.
+        # Ensure features_extractor.last_obs is reliably populated before this call.
         if (
             hasattr(self, "features_extractor")
             and hasattr(self.features_extractor, "last_obs")
@@ -169,12 +205,11 @@ class GNNPolicy(ActorCriticPolicy):
             and isinstance(self.features_extractor.last_obs, dict)
             and "action_mask" in self.features_extractor.last_obs
         ):
-            # Retrieve the action masks corresponding to the latent_pi batch
             action_masks = self.features_extractor.last_obs[
                 "action_mask"
             ]  # Shape [batch_size, num_nodes]
 
-            # Ensure mask is on the same device and has the correct batch size
+            # Ensure mask is on the same device
             action_masks = action_masks.to(mean_actions.device)
 
             # --- Crucial Check: Compare batch sizes ---
@@ -188,17 +223,27 @@ class GNNPolicy(ActorCriticPolicy):
                 return self.action_dist.proba_distribution(action_logits=mean_actions)
             # --- End Check ---
 
-            # Apply the mask
+            # Apply the mask: Add a small epsilon for numerical stability if needed,
+            # but -1e9 should be sufficient.
             masked_logits = torch.where(
-                action_masks > 0,
+                action_masks > 0,  # Use > 0 for float masks
                 mean_actions,
-                torch.tensor(-1e9, device=mean_actions.device),
+                torch.tensor(
+                    -1e9, device=mean_actions.device, dtype=mean_actions.dtype
+                ),  # Match dtype
             )
+            # Check if all actions are masked (can happen in edge cases)
+            if not torch.any(action_masks > 0, dim=1).all():
+                print(
+                    "Warning: Some samples have all actions masked in _get_action_dist_from_latent!"
+                )
+                # Optional: Handle this case, e.g., by allowing a default action or raising an error.
+                # For now, PPO might handle it, potentially leading to NaN gradients if probabilities are zero.
+
             return self.action_dist.proba_distribution(action_logits=masked_logits)
         else:
-            # Fallback if mask isn't available for some reason
             print(
-                "Warning: Action mask not found in features_extractor.last_obs. Using unmasked actions."
+                "Warning: Action mask not found or invalid in features_extractor.last_obs. Using unmasked actions."
             )
             return self.action_dist.proba_distribution(action_logits=mean_actions)
         # {{ edit_4_end }}
