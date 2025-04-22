@@ -13,6 +13,7 @@ import supersuit as ss
 from datetime import datetime
 import logging
 import sys
+import copy  # Import copy for deepcopy
 from GPE.env.graph_pe import GPE
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CallbackList
@@ -39,18 +40,18 @@ if __name__ == "__main__":
     try:
         with open("config.json", "r") as f:
             config = json.load(f)
-        # Use print here initially or setup basic logging just for config loading outside the main logger setup
-        print(
-            "Configuration loaded from config.json"
-        )  # Or use basic logger if preferred
+        print("Configuration loaded from config.json")
     except FileNotFoundError:
-        print("Error: config.json not found. Please create the configuration file.")
+        print("Error: config.json not found.")
         exit()
     except json.JSONDecodeError:
         print("Error: config.json is not valid JSON.")
         exit()
 
-    # Extract config sections for easier access
+    # Extract config sections
+    # --- Make a deep copy for saving later ---
+    config_to_save = copy.deepcopy(config)
+    # --- Use original config for runtime ---
     env_config = config.get("environment", {})
     nn_config = config.get("neural_network", {})
     train_config = config.get("training", {})
@@ -135,78 +136,127 @@ if __name__ == "__main__":
     logging.info("Using Configuration:")
     logging.info(json.dumps(config, indent=4))
 
-    # --- Start Edit: Generate Grid Graph for Test ---
-    # Use grid graph generation matching the environment's new logic
-    target_n_nodes = env_config["num_nodes"]
-    m = int(np.floor(np.sqrt(target_n_nodes)))
-    n = int(np.ceil(target_n_nodes / m))
-    actual_num_nodes = m * n
+    # === Prepare Graph and Grid Dimensions ===
+    base_graph = None
+    m, n = None, None
+    use_preset = env_config.get("use_preset_graph", False)  # Check the runtime config
 
-    logging.info(
-        f"Test Script: Generating {m}x{n} grid graph ({actual_num_nodes} nodes)."
-    )
-    base_graph = nx.grid_2d_graph(m, n)
-    base_graph = nx.convert_node_labels_to_integers(
-        base_graph, first_label=0, ordering="default"
-    )
-
-    # Update num_nodes in config to actual grid size
-    env_config["num_nodes"] = actual_num_nodes
-    # Keep a copy for visualization if needed later (though we'll reload config)
-    # graph_for_viz = base_graph # Can be removed if loading from saved config
-    # --- End Edit ---
-
-    # === Save Run Configuration ===
-    # Store the serializable graph representation in the config dict
-    if isinstance(base_graph, nx.Graph):
-        try:
-            env_config["graph_adj"] = json_graph.adjacency_data(base_graph)
-            # Remove the non-serializable graph object if it was added temporarily
-            if "graph" in env_config:
-                del env_config["graph"]
-        except Exception as e:
-            logging.warning(
-                f"Warning: Could not serialize graph for saving config. Error: {e}"
+    if use_preset:
+        logging.info("Using preset graph from configuration.")
+        preset_graph_data = env_config.get("preset_graph", {}).get("graph_adj")
+        if preset_graph_data:
+            try:
+                base_graph = json_graph.adjacency_graph(preset_graph_data)
+                actual_num_nodes = base_graph.number_of_nodes()
+                env_config["num_nodes"] = actual_num_nodes  # Update runtime config
+                logging.info(f"Preset graph loaded: {actual_num_nodes} nodes.")
+                # Try to infer grid dimensions if layout is grid
+                if env_config.get("layout_algorithm") == "grid":
+                    possible_m = int(np.floor(np.sqrt(actual_num_nodes)))
+                    if possible_m > 0:
+                        possible_n = int(np.ceil(actual_num_nodes / possible_m))
+                        if possible_m * possible_n == actual_num_nodes:
+                            m, n = possible_m, possible_n
+                            logging.info(
+                                f"Inferred grid dimensions {m}x{n} for preset graph rendering."
+                            )
+            except Exception as e:
+                logging.error(f"Error loading preset graph: {e}", exc_info=True)
+                exit()
+        else:
+            logging.error(
+                "Preset graph data not found in config despite use_preset_graph=true."
             )
-            env_config["graph_adj"] = None  # Indicate graph couldn't be saved
+            exit()
     else:
-        env_config["graph_adj"] = None  # No graph generated or passed directly
+        logging.info("Generating grid graph based on num_nodes.")
+        target_n_nodes = env_config["num_nodes"]
+        m = int(np.floor(np.sqrt(target_n_nodes)))
+        n = int(np.ceil(target_n_nodes / m))
+        actual_num_nodes = m * n
+        logging.info(f"Generating {m}x{n} grid graph ({actual_num_nodes} nodes).")
+        base_graph = nx.grid_2d_graph(m, n)
+        base_graph = nx.convert_node_labels_to_integers(
+            base_graph, first_label=0, ordering="default"
+        )
+        env_config["num_nodes"] = actual_num_nodes  # Update runtime config
 
-    # Save the *final* config used for this run to the model directory
+    if base_graph is None:
+        logging.error("Failed to load or generate graph.")
+        exit()
+
+    # === Save Run Configuration (Using the copy) ===
+    # Add serializable graph_adj to the config *copy* for saving
+    try:
+        # Ensure the environment section exists in the copy
+        if "environment" not in config_to_save:
+            config_to_save["environment"] = {}
+        # Add graph_adj and ensure num_nodes is correct in the saved config
+        config_to_save["environment"]["graph_adj"] = json_graph.adjacency_data(
+            base_graph
+        )
+        config_to_save["environment"]["num_nodes"] = base_graph.number_of_nodes()
+        # Remove potentially non-serializable keys if they existed in original
+        if "preset_graph" in config_to_save["environment"]:
+            if (
+                "graph" in config_to_save["environment"]["preset_graph"]
+            ):  # Example check
+                del config_to_save["environment"]["preset_graph"]["graph"]
+    except Exception as e:
+        logging.warning(
+            f"Warning: Could not serialize graph for saving config. Error: {e}"
+        )
+        if "environment" in config_to_save:
+            config_to_save["environment"]["graph_adj"] = None
+
     config_save_path = os.path.join(model_save_dir, "config.json")
     try:
         with open(config_save_path, "w") as f:
-            # Use json.dump - ensure all values in config are JSON serializable
-            # nx.Graph object was replaced by graph_adj dict above
-            json.dump(config, f, indent=4)
+            json.dump(config_to_save, f, indent=4)
         logging.info(f"Run configuration saved to {config_save_path}")
-    except TypeError as e:
-        logging.warning(
-            f"Warning: Could not save run configuration due to non-serializable data. Error: {e}"
-        )
     except Exception as e:
         logging.warning(
-            f"Warning: Could not save run configuration to {config_save_path}. Error: {e}"
+            f"Warning: Could not save run configuration to {config_save_path}. Error: {e}",
+            exc_info=True,
         )
     # ============================
 
-    # --- Re-add graph object for GPE if needed by current training flow ---
-    # The GPE init below might expect the actual graph object.
-    # If env_config["graph"] was deleted above, add it back from base_graph for the *training* instance.
-    # The visualization script will reconstruct it from graph_adj.
-    env_config["graph"] = base_graph
+    # === Prepare Config for GPE Instantiation ===
+    # Start with the runtime env_config (already updated num_nodes if needed)
+    gpe_init_config = env_config.copy()  # Shallow copy is fine here
+    # Add the actual graph object
+    gpe_init_config["graph"] = base_graph
+    # Remove keys not expected by GPE.__init__
+    gpe_init_config.pop("use_preset_graph", None)
+    gpe_init_config.pop("preset_graph", None)
+    # The delta reward scales are already in gpe_init_config if they were in the original file
 
-    # --- Start Edit: Remove 'graph_adj' before creating GPE instance ---
-    # 'graph_adj' was only needed for saving the config, not for initializing GPE
-    if "graph_adj" in env_config:
-        del env_config["graph_adj"]
-    # --- End Edit ---
+    # === Instantiate Training Environment ===
+    logging.info("Creating base GPE environment for training...")
+    try:
+        base_env = GPE(
+            **gpe_init_config,  # Includes delta scales if defined in config
+            render_mode=None,  # Override render mode for training
+            grid_m=m,  # Pass grid dims explicitly
+            grid_n=n,
+        )
+        logging.info("Base training environment created.")
+    except TypeError as e:
+        logging.error(
+            f"Error creating GPE instance. Check config.json keys match GPE arguments. Error: {e}",
+            exc_info=True,
+        )
+        # Log the keys being passed to help debug
+        logging.error(
+            f"Arguments passed via **gpe_init_config: {list(gpe_init_config.keys())}"
+        )
+        logging.error(f"Explicit arguments: render_mode=None, grid_m={m}, grid_n={n}")
+        exit()
+    except Exception as e:
+        logging.error(f"Unexpected error creating GPE instance: {e}", exc_info=True)
+        exit()
 
-    logging.info("Creating base GPE environment...")
-    # Now env_config only contains arguments expected by GPE.__init__ (plus the actual 'graph')
-    base_env = GPE(**env_config, render_mode=None, grid_m=m, grid_n=n)
-    logging.info("Base environment created.")
-
+    # === Wrap and Vectorize Training Environment (Keep as is) ===
     logging.info("Wrapping environment with GNNEnvWrapper...")
     try:
         env = GNNEnvWrapper(base_env)
@@ -308,11 +358,8 @@ if __name__ == "__main__":
     model.learn(total_timesteps=total_training_timesteps, callback=callbacks)
     logging.info("Training finished.")
 
-    # --- Updated Saving Logic ---
-    # Use the specific model directory created earlier
-    # The filename within the directory can be simpler now
-    model_filename = "trained_model.zip"
-    model_save_path = os.path.join(model_save_dir, model_filename)
+    # === Save Model and Metrics (Keep as is) ===
+    model_save_path = os.path.join(model_save_dir, "trained_model.zip")
     model.save(model_save_path)
     logging.info(f"Model saved to {model_save_path}")
 
@@ -349,26 +396,84 @@ if __name__ == "__main__":
         )
         exit()
 
-    # --- Update Visualization Saving ---
+    # === Setup Visualization Environment ===
     logging.info("\nVisualizing trained GNN policy...")
-    # Read render mode from config for visualization env
     viz_render_mode = vis_config.get("RENDER_MODE", "human")
+    viz_graph = None
+    viz_env_init_config = {}
 
-    # Create a clean env_config copy for visualization if needed, or ensure 'graph_adj' is removed
-    viz_env_config = env_config.copy()  # Use the already cleaned env_config
-    # If you re-read the config from file here, you'd need to remove 'graph_adj' again.
-    # viz_env_config = config.get("environment", {}).copy() # Example if re-reading
-    # viz_env_config["graph"] = base_graph # Add graph object back
-    # if "graph_adj" in viz_env_config:
-    #    del viz_env_config["graph_adj"]
+    # --- Load the config *saved* for this specific run ---
+    logging.info(f"Loading run config for visualization from: {config_save_path}")
+    try:
+        with open(config_save_path, "r") as f:
+            run_config = json.load(f)
+        viz_env_config_loaded = run_config.get("environment", {})
 
-    # Pass the cleaned config AND grid dimensions to the visualization GPE instance
-    viz_env_base_gnn = GPE(
-        **viz_env_config, render_mode=viz_render_mode, grid_m=m, grid_n=n
-    )
+        # Reconstruct the graph
+        graph_adj_data = viz_env_config_loaded.pop("graph_adj", None)  # Pop adj data
+        if graph_adj_data:
+            viz_graph = json_graph.adjacency_graph(graph_adj_data)
+            logging.info(
+                f"Reconstructed graph with {viz_graph.number_of_nodes()} nodes for visualization."
+            )
+            # Ensure num_nodes matches the actual graph
+            viz_env_config_loaded["num_nodes"] = viz_graph.number_of_nodes()
+        else:
+            logging.error(
+                "Could not reconstruct graph from saved config for visualization. Exiting."
+            )
+            exit()  # Or fallback if preferred, but reconstruction is safer
+
+        # Prepare config for GPE init (remove non-init args)
+        viz_env_init_config = viz_env_config_loaded.copy()
+        viz_env_init_config.pop("use_preset_graph", None)
+        viz_env_init_config.pop("preset_graph", None)
+        # Delta scales are already included if they were in the saved config
+
+    except FileNotFoundError:
+        logging.error(
+            f"Saved config file not found at {config_save_path} for visualization. Exiting."
+        )
+        exit()
+    except Exception as e:
+        logging.error(
+            f"Error reloading config or reconstructing graph for visualization: {e}. Exiting.",
+            exc_info=True,
+        )
+        exit()
+
+    # --- Instantiate Visualization Environment ---
+    logging.info("Creating base GPE environment for visualization...")
+    try:
+        # Use the loaded config and reconstructed graph
+        # Grid dimensions (m, n) should be consistent if generated, or inferred if preset
+        # Re-calculate or pass m, n if needed and available from training setup
+        # For simplicity, let's assume m, n are available or don't strictly matter if layout isn't grid
+        viz_env_base_gnn = GPE(
+            **viz_env_init_config,  # Includes delta scales from saved config
+            graph=viz_graph,
+            render_mode=viz_render_mode,
+            grid_m=m,  # Pass m, n calculated during training setup
+            grid_n=n,
+        )
+        logging.info("Base visualization environment created.")
+    except TypeError as e:
+        logging.error(
+            f"Error creating visualization GPE instance. Error: {e}", exc_info=True
+        )
+        logging.error(
+            f"Arguments passed via **viz_env_init_config: {list(viz_env_init_config.keys())}"
+        )
+        exit()
+    except Exception as e:
+        logging.error(
+            f"Unexpected error creating visualization GPE instance: {e}", exc_info=True
+        )
+        exit()
+
     viz_env_wrapper_gnn = GNNEnvWrapper(viz_env_base_gnn)
 
-    # Call visualize_policy directly, passing the results_save_dir
+    # === Visualize Policy (Keep as is, but pass correct save dir) ===
     visualize_policy(
         model=loaded_model,
         env=viz_env_base_gnn,
@@ -377,7 +482,7 @@ if __name__ == "__main__":
         max_steps=vis_config["MAX_STEPS"],
         save_animation=vis_config.get("SAVE_ANIMATION", True),
         use_shortest_path=vis_config.get("USE_SHORTEST_PATH", False),
-        save_dir=results_save_dir,  # Pass the specific run's results directory
+        save_dir=results_save_dir,  # Use the run-specific results directory
     )
     if vis_config.get("SAVE_ANIMATION", True):
         logging.info(f"Visualizations saved in {results_save_dir}")

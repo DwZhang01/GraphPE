@@ -8,7 +8,7 @@ from pettingzoo import ParallelEnv
 from pettingzoo import AECEnv
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
-from typing import Optional
+from typing import Optional, Dict, List, Tuple, Any
 
 
 class GPE(ParallelEnv):
@@ -65,6 +65,8 @@ class GPE(ParallelEnv):
         allow_stay: bool = False,
         grid_m: Optional[int] = None,
         grid_n: Optional[int] = None,
+        delta_distance_reward_pursuer_scale: Optional[float] = None,
+        delta_distance_penalty_evader_scale: Optional[float] = None,
     ):
         """
         Initialize the GPE environment.
@@ -86,6 +88,8 @@ class GPE(ParallelEnv):
             escape_reward_pursuer: Reward for pursuers when evader reaches safe node.
             layout_algorithm (str): Layout algorithm for rendering ('spring', 'kamada_kawai', 'grid', 'spectral'). Defaults to 'spring'.
             allow_stay (bool): If False (default), agents must move to a neighbor. If True, staying in the current node is a valid action.
+            delta_distance_reward_pursuer_scale (Optional[float]): Scaling factor for pursuer reward based on change in distance to evader (closer = positive delta). Defaults to None (disabled).
+            delta_distance_penalty_evader_scale (Optional[float]): Scaling factor for evader penalty based on change in distance to pursuer (closer = positive delta). Should be negative. Defaults to None (disabled).
         """
         super().__init__()
         self.np_random = np.random.RandomState(seed)
@@ -94,6 +98,12 @@ class GPE(ParallelEnv):
         self.allow_stay = allow_stay
         self.grid_m = grid_m
         self.grid_n = grid_n
+
+        # Store delta distance reward parameters
+        self.delta_reward_pursuer_scale = delta_distance_reward_pursuer_scale
+        self.delta_penalty_evader_scale = delta_distance_penalty_evader_scale
+        # Initialize dictionary to store distances from the previous step
+        self.last_pursuer_evader_distances: Dict[Tuple[str, str], float] = {}
 
         self.custom_graph = graph
         if self.custom_graph is None:
@@ -210,6 +220,7 @@ class GPE(ParallelEnv):
         self.truncations = {agent: False for agent in self.agents}
         self.infos = {agent: {} for agent in self.agents}
         self.captured_evaders = set()
+        self.last_pursuer_evader_distances = {}  # Reset the distance cache
         all_nodes = list(self.graph.nodes())
         all_nodes_set = set(all_nodes)  # Use set for faster operations
         self.agent_positions = {}
@@ -298,11 +309,40 @@ class GPE(ParallelEnv):
                 )
                 self.safe_node = self.np_random.choice(all_nodes)
 
+        # Calculate and store initial distances after agents are placed
+        self._update_last_distances()
+
         # Generate initial observations for all agents
         observations = {agent: self._get_observation(agent) for agent in self.agents}
 
         # Return standard reset format
         return observations, self.infos
+
+    def _update_last_distances(self):
+        """Calculates and stores the current distances between all active P-E pairs."""
+        self.last_pursuer_evader_distances = {}  # Clear previous step's cache
+        active_pursuers = [p for p in self.pursuers if p in self.agent_positions]
+        active_evaders = [
+            e
+            for e in self.evaders
+            if e in self.agent_positions and e not in self.captured_evaders
+        ]
+
+        for p_agent in active_pursuers:
+            p_pos = self.agent_positions[p_agent]
+            for e_agent in active_evaders:
+                e_pos = self.agent_positions[e_agent]
+                pair = (p_agent, e_agent)
+                try:
+                    distance = nx.shortest_path_length(
+                        self.graph, source=p_pos, target=e_pos
+                    )
+                    self.last_pursuer_evader_distances[pair] = distance
+                except (nx.NetworkXNoPath, nx.NodeNotFound):
+                    # Store infinity or a large number if no path, or handle as needed
+                    self.last_pursuer_evader_distances[pair] = float("inf")
+                    # print(f"Warning: No path or node not found between {p_agent} ({p_pos}) and {e_agent} ({e_pos}) during distance update.")
+                    pass  # Silently handle for now
 
     def _get_observation(self, agent):
         """Generate observation for an agent, including action mask."""
@@ -366,7 +406,13 @@ class GPE(ParallelEnv):
 
         return observation_vector
 
-    def step(self, actions):
+    def step(self, actions: Dict[str, int]) -> Tuple[
+        Dict[str, np.ndarray],
+        Dict[str, float],
+        Dict[str, bool],
+        Dict[str, bool],
+        Dict[str, Dict],
+    ]:
         """Execute actions for ---all-- agents and return new observations."""
 
         active_agents_set = set(self.agents)
@@ -429,6 +475,82 @@ class GPE(ParallelEnv):
 
         self.agent_positions = next_positions
 
+        # --- Calculate Delta Distance Rewards (Optional) ---
+        current_step_distances = {}  # Store distances calculated in *this* step
+        if (
+            self.delta_reward_pursuer_scale is not None
+            or self.delta_penalty_evader_scale is not None
+        ):
+            active_pursuers = [
+                p
+                for p in self.pursuers
+                if p in self.agent_positions and p in self.agents
+            ]  # Check agent is still active
+            active_evaders = [
+                e
+                for e in self.evaders
+                if e in self.agent_positions
+                and e not in self.captured_evaders
+                and e in self.agents
+            ]  # Check agent is still active
+
+            for p_agent in active_pursuers:
+                p_pos = self.agent_positions[p_agent]
+                for e_agent in active_evaders:
+                    e_pos = self.agent_positions[e_agent]
+                    pair = (p_agent, e_agent)
+
+                    try:
+                        current_dist = nx.shortest_path_length(
+                            self.graph, source=p_pos, target=e_pos
+                        )
+                        current_step_distances[pair] = (
+                            current_dist  # Store current distance
+                        )
+
+                        # Get distance from the end of the *previous* step
+                        last_dist = self.last_pursuer_evader_distances.get(pair)
+
+                        # Calculate reward only if last distance exists (not first step, both agents were present)
+                        if (
+                            last_dist is not None
+                            and last_dist != float("inf")
+                            and current_dist != float("inf")
+                        ):
+                            delta_distance = (
+                                last_dist - current_dist
+                            )  # Positive if closer
+
+                            # Apply reward if distance decreased (delta > 0)
+                            if delta_distance > 0:
+                                if (
+                                    self.delta_reward_pursuer_scale is not None
+                                    and p_agent in self.rewards
+                                ):
+                                    self.rewards[p_agent] += (
+                                        self.delta_reward_pursuer_scale * delta_distance
+                                    )
+                                if (
+                                    self.delta_penalty_evader_scale is not None
+                                    and e_agent in self.rewards
+                                ):
+                                    # Ensure scale is negative for penalty
+                                    self.rewards[e_agent] += (
+                                        self.delta_penalty_evader_scale * delta_distance
+                                    )
+
+                            # Optional: Apply reward/penalty if distance increased (delta < 0)
+                            # elif delta_distance < 0:
+                            #    # Add logic here if you want to reward evader for increasing distance
+                            #    pass
+
+                    except (nx.NetworkXNoPath, nx.NodeNotFound) as e:
+                        # Store inf distance and handle exception (no reward calculation based on this)
+                        current_step_distances[pair] = float("inf")
+                        # print(f"Warning: No path or node not found between {p_agent} ({p_pos}) and {e_agent} ({e_pos}) during step.")
+                        pass  # Silently handle for now
+        # --- End Delta Distance Rewards ---
+
         self._check_captures()
         self._check_safe_arrivals()
         self._check_termination()
@@ -440,20 +562,57 @@ class GPE(ParallelEnv):
                 if not self.terminations[agent]:
                     self.truncations[agent] = True
 
-        active_agents_next_step = []
-        for agent in self.agents:
-            if not self.terminations[agent] and not self.truncations[agent]:
-                active_agents_next_step.append(agent)
-        self.agents = active_agents_next_step
+        # --- Update the last distances cache *after* all checks and *before* removing agents
+        self.last_pursuer_evader_distances = current_step_distances
 
-        observations = {agent: self._get_observation(agent) for agent in actions.keys()}
+        # Filter agents for the next step
+        active_agents_next_step = []
+        original_action_keys = list(
+            actions.keys()
+        )  # Keep track of agents that took an action
+        agents_to_process = self.agents  # Agents active before filtering
+
+        for agent in agents_to_process:
+            # Only keep agents that are not terminated AND not truncated
+            if not self.terminations.get(agent, False) and not self.truncations.get(
+                agent, False
+            ):
+                active_agents_next_step.append(agent)
+        self.agents = active_agents_next_step  # Update the list of active agents for the *next* step
+
+        # Generate observations only for agents that took an action in the input `actions` dict
+        # and are still present (haven't been removed by termination/truncation logic implicitly)
+        observations = {}
+        for agent in original_action_keys:
+            if (
+                agent in self.agent_positions and agent in self.agents
+            ):  # Check if agent still exists and is active for next step
+                observations[agent] = self._get_observation(agent)
+            # else: # If agent terminated/truncated, PettingZoo API expects no observation for it next
+            #     pass
+
+        # Ensure rewards, terminations, truncations, infos dictionaries contain entries
+        # only for the agents that were passed in the input `actions` argument, as expected by PettingZoo Parallel API.
+        # Create new dicts containing only the relevant agents.
+        final_rewards = {
+            agent: self.rewards.get(agent, 0) for agent in original_action_keys
+        }
+        final_terminations = {
+            agent: self.terminations.get(agent, False) for agent in original_action_keys
+        }
+        final_truncations = {
+            agent: self.truncations.get(agent, False) for agent in original_action_keys
+        }
+        final_infos = {
+            agent: self.infos.get(agent, {}) for agent in original_action_keys
+        }
 
         return (
             observations,
-            self.rewards,
-            self.terminations,
-            self.truncations,
-            self.infos,
+            final_rewards,  # Return dicts relevant to input agents
+            final_terminations,
+            final_truncations,
+            final_infos,
         )
 
     def _check_captures(self):
