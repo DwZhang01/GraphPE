@@ -133,8 +133,8 @@ if __name__ == "__main__":
     logging.info(f"Saving models to: {model_save_dir}")
     logging.info(f"Saving results (plots, animations) to: {results_save_dir}")
     logging.info(f"Saving logs to: {logs_save_dir}")
-    logging.info("Using Configuration:")
-    logging.info(json.dumps(config, indent=4))
+    logging.info("Using Configuration:(pass)")
+    # logging.info(json.dumps(config, indent=4))
 
     # === Prepare Graph and Grid Dimensions ===
     base_graph = None
