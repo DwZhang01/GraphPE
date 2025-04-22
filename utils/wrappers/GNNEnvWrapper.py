@@ -205,12 +205,14 @@ class GNNEnvWrapper(ParallelEnv):
         for other_agent, pos in agent_positions.items():
             if 0 <= pos < self.num_nodes:
                 if other_agent.startswith("pursuer"):
-                    node_features[pos, pursuer_count_idx] += 1.0
+                    # node_features[pos, pursuer_count_idx] += 1.0
+                    node_features[pos, pursuer_count_idx] = 1.0
                 elif (
                     other_agent.startswith("evader")
                     and other_agent not in captured_evaders
                 ):
-                    node_features[pos, evader_count_idx] += 1.0
+                    # node_features[pos, evader_count_idx] += 1.0
+                    node_features[pos, evader_count_idx] = 1.0
 
         # 3. Is Current Agent Position
         if 0 <= current_agent_pos < self.num_nodes:

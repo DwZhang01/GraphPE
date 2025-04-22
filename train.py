@@ -11,9 +11,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 import supersuit as ss
 from datetime import datetime
+import logging
+import sys
 from GPE.env.graph_pe import GPE
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CallbackList
+from networkx.readwrite import json_graph
+import traceback
 from torch_geometric.nn import SAGEConv
 from utils.wrappers.GNNEnvWrapper import GNNEnvWrapper
 from policy.GNNPolicy import GNNFeatureExtractor, GNNPolicy
@@ -28,70 +32,108 @@ from utils.callbacks import (
 from utils.visualization import visualize_policy
 
 
-try:
-    with open("config.json", "r") as f:
-        config = json.load(f)
-    print("Configuration loaded from config.json")
-except FileNotFoundError:
-    print("Error: config.json not found. Please create the configuration file.")
-    exit()
-except json.JSONDecodeError:
-    print("Error: config.json is not valid JSON.")
-    exit()
-
-# Extract config sections for easier access
-env_config = config.get("environment", {})
-nn_config = config.get("neural_network", {})
-train_config = config.get("training", {})
-vis_config = config.get("visualization", {})
-
-# Validate required keys (example)
-required_env_keys_base = ["num_pursuers", "num_evaders", "max_steps", "allow_stay"]
-required_nn_keys = ["FEATURES_DIM", "PI_HIDDEN_DIMS", "VF_HIDDEN_DIMS"]
-required_train_keys = ["TOTAL_STEPS", "N_STEPS", "BATCH_SIZE"]
-required_vis_keys = ["MAX_STEPS", "NUM_EPISODES"]
-
-# Simple validation (can be made more robust)
-if (
-    not all(k in env_config for k in required_env_keys_base)
-    or not all(k in nn_config for k in required_nn_keys)
-    or not all(k in train_config for k in required_train_keys)
-    or not all(k in vis_config for k in required_vis_keys)
-):
-    print("Error: Missing required keys in config.json.")
-    print(f"  Need in environment: {required_env_keys_base}")
-    print(f"  Need in neural_network: {required_nn_keys}")
-    print(f"  Need in training: {required_train_keys}")
-    print(f"  Need in visualization: {required_vis_keys}")
-    exit()
-
-
 # Main execution
 if __name__ == "__main__":
 
+    # === Load and Validate Configuration ===
+    try:
+        with open("config.json", "r") as f:
+            config = json.load(f)
+        # Use print here initially or setup basic logging just for config loading outside the main logger setup
+        print(
+            "Configuration loaded from config.json"
+        )  # Or use basic logger if preferred
+    except FileNotFoundError:
+        print("Error: config.json not found. Please create the configuration file.")
+        exit()
+    except json.JSONDecodeError:
+        print("Error: config.json is not valid JSON.")
+        exit()
+
+    # Extract config sections for easier access
+    env_config = config.get("environment", {})
+    nn_config = config.get("neural_network", {})
+    train_config = config.get("training", {})
+    vis_config = config.get("visualization", {})
+
+    # Validate required keys (example)
+    required_env_keys_base = ["num_pursuers", "num_evaders", "max_steps", "allow_stay"]
+    required_nn_keys = ["FEATURES_DIM", "PI_HIDDEN_DIMS", "VF_HIDDEN_DIMS"]
+    required_train_keys = ["TOTAL_STEPS", "N_STEPS", "BATCH_SIZE"]
+    required_vis_keys = ["MAX_STEPS", "NUM_EPISODES"]
+
+    use_preset = env_config.get("use_preset_graph", False)
+    if use_preset:
+        required_env_keys = required_env_keys_base + ["preset_graph"]
+        if "preset_graph" not in env_config or env_config["preset_graph"] is None:
+            print(
+                "Error: 'use_preset_graph' is true but 'preset_graph' key is missing or null in config.json environment section."
+            )
+            exit()
+        if "graph_adj" not in env_config.get("preset_graph", {}):
+            print(
+                "Error: 'preset_graph' in config.json environment section must contain a 'graph_adj' key with the graph data."
+            )
+            exit()
+    else:
+        required_env_keys = required_env_keys_base + ["num_nodes"]
+
+    if (
+        not all(k in env_config for k in required_env_keys)
+        or not all(k in nn_config for k in required_nn_keys)
+        or not all(k in train_config for k in required_train_keys)
+        or not all(k in vis_config for k in required_vis_keys)
+    ):
+        # Use print here as logging is setup later
+        print("Error: Missing required keys in config.json.")
+        print(f"  Need in environment: {required_env_keys}")
+        print(f"  Need in neural_network: {required_nn_keys}")
+        print(f"  Need in training: {required_train_keys}")
+        print(f"  Need in visualization: {required_vis_keys}")
+        exit()
+
     # === Setup Run Directory and Timestamp ===
-    # Use the model name from config as a base for the run name
     base_run_name = train_config.get("MODEL_SAVE_NAME", "gnn_policy_run")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_name = f"{base_run_name}_{timestamp}"
 
-    # Define base directories (relative to the script location)
     models_base_dir = "models"
     results_base_dir = "results"
-    logs_base_dir = "logs"  # Optional: if you have separate text logs
+    logs_base_dir = "logs"
 
-    # Create specific directories for this run
     model_save_dir = os.path.join(models_base_dir, run_name)
     results_save_dir = os.path.join(results_base_dir, run_name)
-    # logs_save_dir = os.path.join(logs_base_dir, run_name) # If needed
+    logs_save_dir = os.path.join(logs_base_dir, run_name)
 
     os.makedirs(model_save_dir, exist_ok=True)
     os.makedirs(results_save_dir, exist_ok=True)
-    # os.makedirs(logs_save_dir, exist_ok=True) # If needed
-    print(f"Run Name: {run_name}")
-    print(f"Saving models to: {model_save_dir}")
-    print(f"Saving results (plots, animations) to: {results_save_dir}")
+    os.makedirs(logs_save_dir, exist_ok=True)
     # ==========================================
+
+    # === Configure Logging ===
+    log_file_path = os.path.join(logs_save_dir, "run.log")
+    log_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    root_logger = logging.getLogger()
+    # root_logger.handlers.clear() # Optional: Uncomment if needed
+
+    file_handler = logging.FileHandler(log_file_path)
+    file_handler.setFormatter(log_formatter)
+    root_logger.addHandler(file_handler)
+
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(log_formatter)
+    root_logger.addHandler(console_handler)
+
+    root_logger.setLevel(logging.INFO)
+    # ==========================================
+
+    # === Log Run Info ===
+    logging.info(f"Run Name: {run_name}")  # This will print to console and file
+    logging.info(f"Saving models to: {model_save_dir}")
+    logging.info(f"Saving results (plots, animations) to: {results_save_dir}")
+    logging.info(f"Saving logs to: {logs_save_dir}")
+    logging.info("Using Configuration:")
+    logging.info(json.dumps(config, indent=4))
 
     # --- Start Edit: Generate Grid Graph for Test ---
     # Use grid graph generation matching the environment's new logic
@@ -100,7 +142,9 @@ if __name__ == "__main__":
     n = int(np.ceil(target_n_nodes / m))
     actual_num_nodes = m * n
 
-    print(f"Test Script: Generating {m}x{n} grid graph ({actual_num_nodes} nodes).")
+    logging.info(
+        f"Test Script: Generating {m}x{n} grid graph ({actual_num_nodes} nodes)."
+    )
     base_graph = nx.grid_2d_graph(m, n)
     base_graph = nx.convert_node_labels_to_integers(
         base_graph, first_label=0, ordering="default"
@@ -116,12 +160,14 @@ if __name__ == "__main__":
     # Store the serializable graph representation in the config dict
     if isinstance(base_graph, nx.Graph):
         try:
-            env_config["graph_adj"] = nx.readwrite.json_graph.adjacency_data(base_graph)
+            env_config["graph_adj"] = json_graph.adjacency_data(base_graph)
             # Remove the non-serializable graph object if it was added temporarily
             if "graph" in env_config:
                 del env_config["graph"]
         except Exception as e:
-            print(f"Warning: Could not serialize graph for saving config. Error: {e}")
+            logging.warning(
+                f"Warning: Could not serialize graph for saving config. Error: {e}"
+            )
             env_config["graph_adj"] = None  # Indicate graph couldn't be saved
     else:
         env_config["graph_adj"] = None  # No graph generated or passed directly
@@ -133,13 +179,13 @@ if __name__ == "__main__":
             # Use json.dump - ensure all values in config are JSON serializable
             # nx.Graph object was replaced by graph_adj dict above
             json.dump(config, f, indent=4)
-        print(f"Run configuration saved to {config_save_path}")
+        logging.info(f"Run configuration saved to {config_save_path}")
     except TypeError as e:
-        print(
+        logging.warning(
             f"Warning: Could not save run configuration due to non-serializable data. Error: {e}"
         )
     except Exception as e:
-        print(
+        logging.warning(
             f"Warning: Could not save run configuration to {config_save_path}. Error: {e}"
         )
     # ============================
@@ -156,26 +202,26 @@ if __name__ == "__main__":
         del env_config["graph_adj"]
     # --- End Edit ---
 
-    print("Creating base GPE environment...")
+    logging.info("Creating base GPE environment...")
     # Now env_config only contains arguments expected by GPE.__init__ (plus the actual 'graph')
-    base_env = GPE(**env_config, render_mode=None)
-    print("Base environment created.")
+    base_env = GPE(**env_config, render_mode=None, grid_m=m, grid_n=n)
+    logging.info("Base environment created.")
 
-    print("Wrapping environment with GNNEnvWrapper...")
+    logging.info("Wrapping environment with GNNEnvWrapper...")
     try:
         env = GNNEnvWrapper(base_env)
-        print("GNNEnvWrapper created.")
-        print(f"Wrapped env agents (initial): {env.agents}")
-        print(f"Wrapped env possible_agents: {env.possible_agents}")
+        logging.info("GNNEnvWrapper created.")
+        logging.info(f"Wrapped env agents (initial): {env.agents}")
+        logging.info(f"Wrapped env possible_agents: {env.possible_agents}")
     except Exception as e:
-        print(f"Error creating GNNEnvWrapper: {e}")
+        logging.error(f"Error creating GNNEnvWrapper: {e}", exc_info=True)
         raise
 
-    print("Attempting PettingZoo vectorization with Supersuit...")
+    logging.info("Attempting PettingZoo vectorization with Supersuit...")
     try:
         # Ensure the env passed is the GNNEnvWrapper instance
         vec_env = ss.pettingzoo_env_to_vec_env_v1(env)
-        print("pettingzoo_env_to_vec_env_v1 successful.")
+        logging.info("pettingzoo_env_to_vec_env_v1 successful.")
         N_ENVS = config["training"]["N_ENVS"]
         N_CPUS = config["training"].get("N_CPUS", N_ENVS)
         vec_env = ss.concat_vec_envs_v1(
@@ -184,25 +230,29 @@ if __name__ == "__main__":
             num_cpus=N_CPUS,
             base_class="stable_baselines3",
         )
-        print("concat_vec_envs_v1 successful.")
-        print("Vectorization successful using Supersuit.")
+        logging.info("concat_vec_envs_v1 successful.")
+        logging.info("Vectorization successful using Supersuit.")
     except Exception as e:
-        print(f"!!! PettingZoo/Supersuit vectorization failed: {e} !!!")
-        print("Ensure GNNEnvWrapper correctly implements the ParallelEnv interface.")
+        logging.error(
+            f"!!! PettingZoo/Supersuit vectorization failed: {e} !!!", exc_info=True
+        )
+        logging.error(
+            "Ensure GNNEnvWrapper correctly implements the ParallelEnv interface."
+        )
         raise
 
     # Reset the vectorized environment
-    print("Resetting vectorized environment...")
+    logging.info("Resetting vectorized environment...")
     try:
         obs = vec_env.reset()
-        print(f"Reset successful.")
+        logging.info(f"Reset successful.")
         # Check the type and shape of the observation from the VecEnv
         if isinstance(obs, np.ndarray):
-            print(f"Observation shape after reset: {obs.shape}")
+            logging.info(f"Observation shape after reset: {obs.shape}")
         else:
-            print(f"Observation type after reset: {type(obs)}")
+            logging.info(f"Observation type after reset: {type(obs)}")
     except Exception as e:
-        print(f"Error resetting vectorized environment: {e}")
+        logging.error(f"Error resetting vectorized environment: {e}", exc_info=True)
         raise
 
     policy_kwargs = {
@@ -220,7 +270,7 @@ if __name__ == "__main__":
         device = "cpu"
     else:  # Default 'auto' or invalid setting
         device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Using device: {device}")
+    logging.info(f"Using device: {device}")
 
     model = PPO(
         GNNPolicy,
@@ -237,6 +287,7 @@ if __name__ == "__main__":
         gae_lambda=train_config.get("GAE_LAMBDA", 0.95),
         clip_range=train_config.get("CLIP_RANGE", 0.2),
         device=device,
+        tensorboard_log=logs_save_dir,
     )
 
     # Set callbacks
@@ -251,11 +302,11 @@ if __name__ == "__main__":
         [reward_callback, capture_debug, escape_debug, detailed_debug]
     )
 
-    print(f"Starting GNN PPO training on device: {model.device}")
+    logging.info(f"Starting GNN PPO training on device: {model.device}")
     total_training_timesteps = train_config["TOTAL_STEPS"]
-    print(f"Training for {total_training_timesteps} timesteps...")
+    logging.info(f"Training for {total_training_timesteps} timesteps...")
     model.learn(total_timesteps=total_training_timesteps, callback=callbacks)
-    print("Training finished.")
+    logging.info("Training finished.")
 
     # --- Updated Saving Logic ---
     # Use the specific model directory created earlier
@@ -263,7 +314,7 @@ if __name__ == "__main__":
     model_filename = "trained_model.zip"
     model_save_path = os.path.join(model_save_dir, model_filename)
     model.save(model_save_path)
-    print(f"Model saved to {model_save_path}")
+    logging.info(f"Model saved to {model_save_path}")
 
     # --- Update Metrics Plot Saving ---
     # Assuming plot_metrics can accept a save directory or path prefix
@@ -271,9 +322,9 @@ if __name__ == "__main__":
     # Example: Assuming it takes a 'save_dir' argument
     try:
         reward_callback.plot_metrics(save_dir=results_save_dir)
-        print(f"Metrics plots saved in {results_save_dir}")
+        logging.info(f"Metrics plots saved in {results_save_dir}")
     except TypeError:
-        print(
+        logging.warning(
             f"Warning: reward_callback.plot_metrics might not support 'save_dir'. Saving to default location."
         )
         reward_callback.plot_metrics()  # Fallback to original call
@@ -284,20 +335,22 @@ if __name__ == "__main__":
     model_path_load = (
         model_save_path  # Path already includes the directory and filename
     )
-    print(f"Loading pre-trained model from '{model_path_load}'...")
+    logging.info(f"Loading pre-trained model from '{model_path_load}'...")
     if not os.path.exists(model_path_load):
-        print(f"Error: Model file not found at {model_path_load}")
+        logging.error(f"Error: Model file not found at {model_path_load}")
         exit()
     try:
         loaded_model = PPO.load(model_path_load, device=model.device, policy=GNNPolicy)
-        print("Model loaded successfully.")
+        logging.info("Model loaded successfully.")
     except Exception as e:
-        print(f"Error loading model: {e}")
-        print("Try ensuring the GNNPolicy class is available in the scope during load.")
+        logging.error(f"Error loading model: {e}", exc_info=True)
+        logging.error(
+            "Try ensuring the GNNPolicy class is available in the scope during load."
+        )
         exit()
 
     # --- Update Visualization Saving ---
-    print("\nVisualizing trained GNN policy...")
+    logging.info("\nVisualizing trained GNN policy...")
     # Read render mode from config for visualization env
     viz_render_mode = vis_config.get("RENDER_MODE", "human")
 
@@ -309,8 +362,10 @@ if __name__ == "__main__":
     # if "graph_adj" in viz_env_config:
     #    del viz_env_config["graph_adj"]
 
-    # Pass the cleaned config to the visualization GPE instance
-    viz_env_base_gnn = GPE(**viz_env_config, render_mode=viz_render_mode)
+    # Pass the cleaned config AND grid dimensions to the visualization GPE instance
+    viz_env_base_gnn = GPE(
+        **viz_env_config, render_mode=viz_render_mode, grid_m=m, grid_n=n
+    )
     viz_env_wrapper_gnn = GNNEnvWrapper(viz_env_base_gnn)
 
     # Call visualize_policy directly, passing the results_save_dir
@@ -325,21 +380,21 @@ if __name__ == "__main__":
         save_dir=results_save_dir,  # Pass the specific run's results directory
     )
     if vis_config.get("SAVE_ANIMATION", True):
-        print(f"Visualizations saved in {results_save_dir}")
+        logging.info(f"Visualizations saved in {results_save_dir}")
     # ----------------------------------
 
     viz_env_base_gnn.close()
 
     metrics = reward_callback.get_metrics_summary()
-    print("\nTraining Summary:")
+    logging.info("\n--- Training Summary ---")
     for key, value in metrics.items():
-        print(f"{key}: {value:.4f}")
+        logging.info(f"{key}: {value:.4f}")
 
-    print("\nCallback Results:")
-    print(f"Total Steps: {reward_callback.total_steps}")
-    print(f"Total Episodes: {reward_callback.episodes}")
-    print(f"Capture Count (Callback): {capture_debug.capture_count}")
-    print(f"Escape Count (Callback): {escape_debug.escape_count}")
-    print(
+    logging.info("\n--- Callback Results ---")
+    logging.info(f"Total Steps: {reward_callback.total_steps}")
+    logging.info(f"Total Episodes: {reward_callback.episodes}")
+    logging.info(f"Capture Count (Callback): {capture_debug.capture_count}")
+    logging.info(f"Escape Count (Callback): {escape_debug.escape_count}")
+    logging.info(
         f"Average Rewards: {np.mean(reward_callback.episode_rewards) if reward_callback.episode_rewards else 0}"
     )

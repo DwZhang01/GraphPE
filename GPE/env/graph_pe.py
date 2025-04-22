@@ -8,6 +8,7 @@ from pettingzoo import ParallelEnv
 from pettingzoo import AECEnv
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+from typing import Optional
 
 
 class GPE(ParallelEnv):
@@ -62,6 +63,8 @@ class GPE(ParallelEnv):
         stay_penalty=-2.0,
         layout_algorithm="spring",
         allow_stay: bool = False,
+        grid_m: Optional[int] = None,
+        grid_n: Optional[int] = None,
     ):
         """
         Initialize the GPE environment.
@@ -89,8 +92,8 @@ class GPE(ParallelEnv):
         self.p_act = p_act
         self.layout_algorithm = layout_algorithm
         self.allow_stay = allow_stay
-        self.grid_m = None
-        self.grid_n = None
+        self.grid_m = grid_m
+        self.grid_n = grid_n
 
         self.custom_graph = graph
         if self.custom_graph is None:
@@ -98,8 +101,10 @@ class GPE(ParallelEnv):
             n = int(np.ceil(num_nodes / m))
             actual_num_nodes = m * n
             self.num_nodes = actual_num_nodes
-            self.grid_m = m
-            self.grid_n = n
+            if self.grid_m == None:
+                self.grid_m = m
+            if self.grid_n == None:
+                self.grid_n = n
             print(
                 f"GPE Init: Grid graph generated ({m}x{n}). Actual num_nodes set to {self.num_nodes}"
             )
@@ -791,7 +796,7 @@ class GPE(ParallelEnv):
                 fontsize="medium",
             )
 
-            plt.pause(0.5)
+            # plt.pause(0.5)
 
     def close(self):
         """Close the rendering window."""

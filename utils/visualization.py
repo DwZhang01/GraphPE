@@ -322,7 +322,7 @@ def visualize_policy(
                 traceback.print_exc()
                 # Continue without this frame if possible
 
-            plt.pause(0.1)  # Small pause to allow viewing
+            # plt.pause(0.1)  # Small pause to allow viewing
 
             # --- Check for Termination/Truncation ---
             # Check if ALL remaining agents are done (terminated or truncated)
