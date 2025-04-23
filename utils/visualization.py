@@ -5,7 +5,7 @@ import numpy as np
 
 import matplotlib
 
-matplotlib.use("Agg")  # Force non-interactive backend for saving files reliably
+# matplotlib.use("Agg")  # Force non-interactive backend for saving files reliably
 import matplotlib.pyplot as plt
 import torch
 import imageio  # Make sure imageio is installed

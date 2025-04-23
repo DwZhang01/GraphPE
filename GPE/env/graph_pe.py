@@ -13,8 +13,8 @@ from gymnasium.utils import EzPickle
 
 # EzPickle
 
+
 class GPE(ParallelEnv):
-    
     """
     Graph Pursuit Evasion (GPE) Environment
 
