@@ -8,7 +8,6 @@ import torch
 import random
 import networkx as nx
 import numpy as np
-import matplotlib.pyplot as plt
 import supersuit as ss
 from datetime import datetime
 import logging
@@ -30,7 +29,6 @@ from utils.callbacks import (
     EscapeDebugCallback,
     DetailedDebugCallback,
 )
-from utils.visualization import visualize_policy
 
 
 # Main execution
@@ -49,19 +47,15 @@ if __name__ == "__main__":
         exit()
 
     # Extract config sections
-    # --- Make a deep copy for saving later ---
     config_to_save = copy.deepcopy(config)
-    # --- Use original config for runtime ---
     env_config = config.get("environment", {})
     nn_config = config.get("neural_network", {})
     train_config = config.get("training", {})
-    vis_config = config.get("visualization", {})
 
     # Validate required keys (example)
     required_env_keys_base = ["num_pursuers", "num_evaders", "max_steps", "allow_stay"]
     required_nn_keys = ["FEATURES_DIM", "PI_HIDDEN_DIMS", "VF_HIDDEN_DIMS"]
     required_train_keys = ["TOTAL_STEPS", "N_STEPS", "BATCH_SIZE"]
-    required_vis_keys = ["MAX_STEPS", "NUM_EPISODES"]
 
     use_preset = env_config.get("use_preset_graph", False)
     if use_preset:
@@ -83,14 +77,12 @@ if __name__ == "__main__":
         not all(k in env_config for k in required_env_keys)
         or not all(k in nn_config for k in required_nn_keys)
         or not all(k in train_config for k in required_train_keys)
-        or not all(k in vis_config for k in required_vis_keys)
     ):
         # Use print here as logging is setup later
         print("Error: Missing required keys in config.json.")
         print(f"  Need in environment: {required_env_keys}")
         print(f"  Need in neural_network: {required_nn_keys}")
         print(f"  Need in training: {required_train_keys}")
-        print(f"  Need in visualization: {required_vis_keys}")
         exit()
 
     # === Setup Run Directory and Timestamp ===
@@ -139,7 +131,7 @@ if __name__ == "__main__":
     # === Prepare Graph and Grid Dimensions ===
     base_graph = None
     m, n = None, None
-    use_preset = env_config.get("use_preset_graph", False)  # Check the runtime config
+    use_preset = env_config.get("use_preset_graph", False)
 
     if use_preset:
         logging.info("Using preset graph from configuration.")
@@ -186,28 +178,30 @@ if __name__ == "__main__":
         exit()
 
     # === Save Run Configuration (Using the copy) ===
-    # Add serializable graph_adj to the config *copy* for saving
     try:
-        # Ensure the environment section exists in the copy
         if "environment" not in config_to_save:
             config_to_save["environment"] = {}
-        # Add graph_adj and ensure num_nodes is correct in the saved config
         config_to_save["environment"]["graph_adj"] = json_graph.adjacency_data(
             base_graph
         )
         config_to_save["environment"]["num_nodes"] = base_graph.number_of_nodes()
-        # Remove potentially non-serializable keys if they existed in original
+
+        if m is not None:
+            config_to_save["environment"]["grid_m"] = m
+            logging.info(f"Saved grid_m={m} to run config.")
+        if n is not None:
+            config_to_save["environment"]["grid_n"] = n
+            logging.info(f"Saved grid_n={n} to run config.")
+
         if "preset_graph" in config_to_save["environment"]:
-            if (
-                "graph" in config_to_save["environment"]["preset_graph"]
-            ):  # Example check
+            if "graph" in config_to_save["environment"]["preset_graph"]:
                 del config_to_save["environment"]["preset_graph"]["graph"]
     except Exception as e:
         logging.warning(
-            f"Warning: Could not serialize graph for saving config. Error: {e}"
+            f"Warning: Could not serialize graph or grid dimensions for saving config. Error: {e}"
         )
         if "environment" in config_to_save:
-            config_to_save["environment"]["graph_adj"] = None
+            config_to_save["environment"]["graph_adj"] = None  # Keep this fallback
 
     config_save_path = os.path.join(model_save_dir, "config.json")
     try:
@@ -222,7 +216,6 @@ if __name__ == "__main__":
     # ============================
 
     # === Prepare Config for GPE Instantiation ===
-    # Start with the runtime env_config (already updated num_nodes if needed)
     gpe_init_config = env_config.copy()  # Shallow copy is fine here
     # Add the actual graph object
     gpe_init_config["graph"] = base_graph
@@ -364,9 +357,6 @@ if __name__ == "__main__":
     logging.info(f"Model saved to {model_save_path}")
 
     # --- Update Metrics Plot Saving ---
-    # Assuming plot_metrics can accept a save directory or path prefix
-    # You might need to modify the MARLRewardCallback.plot_metrics function
-    # Example: Assuming it takes a 'save_dir' argument
     try:
         reward_callback.plot_metrics(save_dir=results_save_dir)
         logging.info(f"Metrics plots saved in {results_save_dir}")
@@ -377,119 +367,11 @@ if __name__ == "__main__":
         reward_callback.plot_metrics()  # Fallback to original call
     # ---------------------------------
 
+    # === Close Training Environment ===
     vec_env.close()
+    logging.info("Training environment closed.")
 
-    model_path_load = (
-        model_save_path  # Path already includes the directory and filename
-    )
-    logging.info(f"Loading pre-trained model from '{model_path_load}'...")
-    if not os.path.exists(model_path_load):
-        logging.error(f"Error: Model file not found at {model_path_load}")
-        exit()
-    try:
-        loaded_model = PPO.load(model_path_load, device=model.device, policy=GNNPolicy)
-        logging.info("Model loaded successfully.")
-    except Exception as e:
-        logging.error(f"Error loading model: {e}", exc_info=True)
-        logging.error(
-            "Try ensuring the GNNPolicy class is available in the scope during load."
-        )
-        exit()
-
-    # === Setup Visualization Environment ===
-    logging.info("\nVisualizing trained GNN policy...")
-    viz_render_mode = vis_config.get("RENDER_MODE", "human")
-    viz_graph = None
-    viz_env_init_config = {}
-
-    # --- Load the config *saved* for this specific run ---
-    logging.info(f"Loading run config for visualization from: {config_save_path}")
-    try:
-        with open(config_save_path, "r") as f:
-            run_config = json.load(f)
-        viz_env_config_loaded = run_config.get("environment", {})
-
-        # Reconstruct the graph
-        graph_adj_data = viz_env_config_loaded.pop("graph_adj", None)  # Pop adj data
-        if graph_adj_data:
-            viz_graph = json_graph.adjacency_graph(graph_adj_data)
-            logging.info(
-                f"Reconstructed graph with {viz_graph.number_of_nodes()} nodes for visualization."
-            )
-            # Ensure num_nodes matches the actual graph
-            viz_env_config_loaded["num_nodes"] = viz_graph.number_of_nodes()
-        else:
-            logging.error(
-                "Could not reconstruct graph from saved config for visualization. Exiting."
-            )
-            exit()  # Or fallback if preferred, but reconstruction is safer
-
-        # Prepare config for GPE init (remove non-init args)
-        viz_env_init_config = viz_env_config_loaded.copy()
-        viz_env_init_config.pop("use_preset_graph", None)
-        viz_env_init_config.pop("preset_graph", None)
-        # Delta scales are already included if they were in the saved config
-
-    except FileNotFoundError:
-        logging.error(
-            f"Saved config file not found at {config_save_path} for visualization. Exiting."
-        )
-        exit()
-    except Exception as e:
-        logging.error(
-            f"Error reloading config or reconstructing graph for visualization: {e}. Exiting.",
-            exc_info=True,
-        )
-        exit()
-
-    # --- Instantiate Visualization Environment ---
-    logging.info("Creating base GPE environment for visualization...")
-    try:
-        # Use the loaded config and reconstructed graph
-        # Grid dimensions (m, n) should be consistent if generated, or inferred if preset
-        # Re-calculate or pass m, n if needed and available from training setup
-        # For simplicity, let's assume m, n are available or don't strictly matter if layout isn't grid
-        viz_env_base_gnn = GPE(
-            **viz_env_init_config,  # Includes delta scales from saved config
-            graph=viz_graph,
-            render_mode=viz_render_mode,
-            grid_m=m,  # Pass m, n calculated during training setup
-            grid_n=n,
-        )
-        logging.info("Base visualization environment created.")
-    except TypeError as e:
-        logging.error(
-            f"Error creating visualization GPE instance. Error: {e}", exc_info=True
-        )
-        logging.error(
-            f"Arguments passed via **viz_env_init_config: {list(viz_env_init_config.keys())}"
-        )
-        exit()
-    except Exception as e:
-        logging.error(
-            f"Unexpected error creating visualization GPE instance: {e}", exc_info=True
-        )
-        exit()
-
-    viz_env_wrapper_gnn = GNNEnvWrapper(viz_env_base_gnn)
-
-    # === Visualize Policy (Keep as is, but pass correct save dir) ===
-    visualize_policy(
-        model=loaded_model,
-        env=viz_env_base_gnn,
-        wrapper_instance=viz_env_wrapper_gnn,
-        num_episodes=vis_config.get("NUM_EPISODES", 3),
-        max_steps=vis_config["MAX_STEPS"],
-        save_animation=vis_config.get("SAVE_ANIMATION", True),
-        use_shortest_path=vis_config.get("USE_SHORTEST_PATH", False),
-        save_dir=results_save_dir,  # Use the run-specific results directory
-    )
-    if vis_config.get("SAVE_ANIMATION", True):
-        logging.info(f"Visualizations saved in {results_save_dir}")
-    # ----------------------------------
-
-    viz_env_base_gnn.close()
-
+    # === Print Final Summaries ===
     metrics = reward_callback.get_metrics_summary()
     logging.info("\n--- Training Summary ---")
     for key, value in metrics.items():

@@ -258,68 +258,39 @@ def visualize_policy(
 
             # --- Render and Capture Frame ---
             try:
-                env.render()  # Call the environment's render method
-                plt.pause(
-                    0.1
-                )  # Add a brief pause to ensure the plot updates for frame capture
+                returned_fig = (
+                    env.render()
+                )  # Call the environment's render method, get figure
 
-                if save_animation:
-                    fig = (
-                        plt.gcf()
-                    )  # Get the current figure created/updated by env.render()
-                    # Robust frame capture logic (attempts to handle potential backend inconsistencies)
-                    fig.canvas.draw()
-                    buf = fig.canvas.buffer_rgba()
-                    image_flat = np.frombuffer(buf, dtype=np.uint8)
-                    logical_width, logical_height = fig.canvas.get_width_height()
-                    actual_size = image_flat.size
-                    expected_size = logical_height * logical_width * 4
+                # Introduce a slightly longer pause AFTER rendering, BEFORE capture
+                plt.pause(0.05)  # Keep this pause
 
-                    actual_height, actual_width = 0, 0
-                    if actual_size == expected_size and expected_size > 0:
-                        actual_height, actual_width = logical_height, logical_width
-                    elif (
-                        actual_size > 0
-                        and actual_size % 4 == 0
-                        and logical_height > 0
-                        and logical_width > 0
-                    ):
-                        # Attempt inference if sizes mismatch but buffer looks valid
-                        num_pixels = actual_size // 4
-                        aspect_ratio = logical_width / logical_height
-                        inferred_height_f = np.sqrt(num_pixels / aspect_ratio)
-                        inferred_width_f = inferred_height_f * aspect_ratio
-                        if np.isclose(
-                            inferred_height_f, round(inferred_height_f)
-                        ) and np.isclose(inferred_width_f, round(inferred_width_f)):
-                            inferred_height_i = int(round(inferred_height_f))
-                            inferred_width_i = int(round(inferred_width_f))
-                            if inferred_height_i * inferred_width_i * 4 == actual_size:
-                                actual_height, actual_width = (
-                                    inferred_height_i,
-                                    inferred_width_i,
-                                )
-                                # print(f"  Debug: Inferred frame dimensions {actual_height}x{actual_width}") # Optional debug
-                            else:  # Mismatch even after inference
-                                print(
-                                    f"  Warning: Could not match inferred frame dimensions ({inferred_height_i}x{inferred_width_i}) to buffer size {actual_size}. Skipping frame."
-                                )
-                                continue
-                        else:  # Non-integer inference
-                            print(
-                                f"  Warning: Could not infer integer frame dimensions. Skipping frame."
-                            )
-                            continue
-                    else:  # Invalid buffer or dimensions
+                if save_animation and returned_fig is not None:
+                    # Use the returned figure directly
+                    fig = returned_fig
+
+                    # Explicitly draw the canvas *again* right before capturing buffer
+                    fig.canvas.draw()  # Keep this draw call
+
+                    # Directly render to RGBA buffer (NumPy array)
+                    image_rgba = np.array(fig.canvas.buffer_rgba())
+                    # Check if the array is valid before proceeding
+                    if image_rgba is not None and image_rgba.size > 0:
+                        # Convert to RGB (discard Alpha channel)
+                        image_rgb = image_rgba[:, :, :3]
+                        frames.append(image_rgb)
                         print(
-                            f"  Warning: Invalid frame buffer or dimensions (Size: {actual_size}, Expected: {expected_size}). Skipping frame."
+                            f"  Debug: Frame {step+1} appended. Total frames now: {len(frames)}"
                         )
-                        continue
+                    else:
+                        print(
+                            f"  Warning: Captured empty frame buffer at step {step+1}. Skipping frame."
+                        )
 
-                    # Reshape and store if dimensions are valid
-                    image_rgba = image_flat.reshape(actual_height, actual_width, 4)
-                    image_rgb = image_rgba[:, :, :3]  # Drop alpha
-                    frames.append(image_rgb)
+                elif save_animation and returned_fig is None:
+                    print(
+                        f"  Warning: env.render() did not return a figure object at step {step+1}. Skipping frame capture."
+                    )
 
             except Exception as e:
                 print(f"Error during rendering or frame capture: {e}")
@@ -349,20 +320,33 @@ def visualize_policy(
 
         # --- Save Animation ---
         if save_animation and frames and resolved_save_dir:
+            filepath = None  # Initialize filepath to None
             try:
+                print(
+                    f"  Debug: Preparing to save GIF for Episode {episode+1}. Number of frames collected: {len(frames)}"
+                )
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 policy_type = "GNN" if not use_shortest_path else "ShortestPath"
-                filename = f"GPE_Viz_{policy_type}_Ep{episode+1}_{timestamp}.gif"
+                filename = f"GPE_Viz_{policy_type}_{timestamp}_Ep{episode+1}.gif"
                 filepath = os.path.join(resolved_save_dir, filename)
                 print(f"Saving animation ({len(frames)} frames) to {filepath}...")
-                imageio.mimsave(filepath, frames, fps=animation_fps)
+                frame_duration = 1.0 / animation_fps
+                imageio.mimsave(filepath, frames, duration=frame_duration)
                 print("Animation saved.")
+                if os.path.exists(filepath):
+                    print(f"  Debug: File confirmed to exist at {filepath}")
+                else:
+                    print(
+                        f"  Warning: File NOT found at {filepath} immediately after saving!"
+                    )
+
             except ImportError:
                 print(
                     "Error: Could not save animation - 'imageio' package not found. Please install it (`pip install imageio`)."
                 )
             except Exception as e:
-                print(f"Error saving animation: {e}")
+                error_loc = f" at path '{filepath}'" if filepath else ""
+                print(f"Error saving animation{error_loc}: {e}")
                 traceback.print_exc()
 
         if num_episodes > 1:

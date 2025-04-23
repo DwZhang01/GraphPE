@@ -734,9 +734,13 @@ class GPE(ParallelEnv):
         return self.action_spaces[agent]
 
     def render(self):
-        """Render the environment state with a fixed layout and static legend."""
+        """Render the environment state with a fixed layout and static legend.
+        Returns the matplotlib figure object in 'human' mode.
+        """
+        print(f"  Debug GPE.render: self.render_mode = {self.render_mode}")
+
         if self.render_mode is None:
-            return
+            return None
 
         print(f"Timestep: {self.timestep}")
         print(f"Safe node: {self.safe_node}")
@@ -750,7 +754,6 @@ class GPE(ParallelEnv):
         )
 
         if self.render_mode == "human":
-            # --- Define Static Legend Elements ---
             legend_handles = [
                 Line2D(
                     [0],
@@ -794,15 +797,12 @@ class GPE(ParallelEnv):
                 ),  # Larger marker
             ]
             legend_labels = [h.get_label() for h in legend_handles]
-            # --- End Static Legend Definition ---
 
             if not hasattr(self, "fig") or not plt.fignum_exists(self.fig.number):
                 self.fig = plt.figure(figsize=(12, 8))
                 self.ax = self.fig.add_subplot(111)
                 self.fig.subplots_adjust(left=0.05, right=0.80, bottom=0.05, top=0.95)
 
-                # --- Start Edit: Calculate layout based on self.layout_algorithm ---
-                # Calculate layout only once per episode start or if missing
                 if not hasattr(self, "pos_layout") or self.timestep == 0:
                     print(
                         f"Calculating '{self.layout_algorithm}' layout for rendering..."
@@ -820,8 +820,6 @@ class GPE(ParallelEnv):
                             self.pos_layout = nx.spectral_layout(self.graph)
                         elif self.layout_algorithm == "grid":
                             if self.grid_m is not None and self.grid_n is not None:
-                                # Recreate grid positions based on node ID and stored m, n
-                                # Assumes nodes are 0 to m*n-1, ordered row by row typically
                                 self.pos_layout = {
                                     node: (
                                         node % self.grid_n,
@@ -839,48 +837,34 @@ class GPE(ParallelEnv):
                                 self.pos_layout = nx.spring_layout(
                                     self.graph, k=0.5, iterations=50
                                 )
-                        # Add other layouts here if needed (e.g., 'circular', 'shell')
-                        # elif self.layout_algorithm == 'circular':
-                        #    self.pos_layout = nx.circular_layout(self.graph)
                         else:
                             print(
                                 f"  Warning: Unknown layout_algorithm '{self.layout_algorithm}'. Falling back to spring layout."
                             )
                             self.pos_layout = nx.spring_layout(
                                 self.graph, k=0.5, iterations=50
-                            )  # Fallback on any error
+                            )
                     except Exception as e:
                         print(
                             f"  Error calculating layout '{self.layout_algorithm}': {e}. Falling back to spring layout."
                         )
                         self.pos_layout = nx.spring_layout(
                             self.graph, k=0.5, iterations=50
-                        )  # Fallback on any error
+                        )
 
-            # --- End Edit ---
+            x_coords, y_coords = zip(*self.pos_layout.values())
+            x_min, x_max = min(x_coords), max(x_coords)
+            y_min, y_max = min(y_coords), max(y_coords)
+            x_margin = (x_max - x_min) * 0.05 if x_max > x_min else 0.1
+            y_margin = (y_max - y_min) * 0.05 if y_max > y_min else 0.1
+            self.render_xlim = (x_min - x_margin, x_max + x_margin)
+            self.render_ylim = (y_min - y_margin, y_max + y_margin)
 
-            # --- Start Edit: Consistent axis limits calculation moved slightly ---
-            # Set consistent axis limits based on the calculated layout (do this *after* layout calculation)
-            if (
-                not hasattr(self, "render_xlim") or self.timestep == 0
-            ):  # Check if limits need recalculating (e.g., first step)
-                x_coords, y_coords = zip(*self.pos_layout.values())
-                x_min, x_max = min(x_coords), max(x_coords)
-                y_min, y_max = min(y_coords), max(y_coords)
-                x_margin = (
-                    (x_max - x_min) * 0.05 if x_max > x_min else 0.1
-                )  # Add small margin even if flat
-                y_margin = (y_max - y_min) * 0.05 if y_max > y_min else 0.1
-                self.render_xlim = (x_min - x_margin, x_max + x_margin)
-                self.render_ylim = (y_min - y_margin, y_max + y_margin)
-
-            plt.figure(self.fig.number)  # Ensure we're using the correct figure
+            plt.figure(self.fig.number)
             self.ax.clear()
             self.ax.set_xlim(self.render_xlim)
             self.ax.set_ylim(self.render_ylim)
-            # --- End Edit ---
 
-            # Draw graph structure (uses self.pos_layout calculated above)
             nx.draw_networkx_nodes(
                 self.graph,
                 self.pos_layout,
@@ -896,10 +880,7 @@ class GPE(ParallelEnv):
                 width=0.75,
                 alpha=0.6,
             )
-            # nx.draw_networkx_labels(...) # Keep labels off for less clutter
 
-            # Draw agents WITHOUT individual labels for the legend
-            # Pursuers
             for pursuer in self.pursuers:
                 if pursuer in self.agent_positions:
                     position = self.agent_positions[pursuer]
@@ -907,9 +888,8 @@ class GPE(ParallelEnv):
                         self.pos_layout[position][0],
                         self.pos_layout[position][1],
                         "ro",
-                        markersize=10,  # Use marker size consistent with legend
+                        markersize=10,
                     )
-                    # Keep annotations if desired
                     self.ax.annotate(
                         pursuer,
                         (self.pos_layout[position][0], self.pos_layout[position][1]),
@@ -919,13 +899,12 @@ class GPE(ParallelEnv):
                         fontsize=7,
                     )
 
-            # Evaders (Active and Captured)
             for evader in self.evaders:
                 if evader in self.agent_positions:
                     position = self.agent_positions[evader]
                     is_captured = evader in self.captured_evaders
                     color = "yo" if is_captured else "bo"
-                    marker_size = 8 if is_captured else 10  # Match legend marker size
+                    marker_size = 8 if is_captured else 10
 
                     self.ax.plot(
                         self.pos_layout[position][0],
@@ -933,7 +912,6 @@ class GPE(ParallelEnv):
                         color,
                         markersize=marker_size,
                     )
-                    # Keep annotations
                     anno_text = f"{evader}{' (C)' if is_captured else ''}"
                     anno_color = "orange" if is_captured else "blue"
                     self.ax.annotate(
@@ -946,15 +924,13 @@ class GPE(ParallelEnv):
                         ha="left",
                     )
 
-            # Safe Node
             if self.safe_node is not None:
                 self.ax.plot(
                     self.pos_layout[self.safe_node][0],
                     self.pos_layout[self.safe_node][1],
                     "go",
-                    markersize=12,  # Match legend marker size
+                    markersize=12,
                 )
-                # Keep annotation
                 self.ax.annotate(
                     "SAFE",
                     (
@@ -972,7 +948,6 @@ class GPE(ParallelEnv):
             self.ax.set_xticks([])
             self.ax.set_yticks([])
 
-            # Draw the STATIC Legend
             self.ax.legend(
                 handles=legend_handles,
                 labels=legend_labels,
@@ -982,7 +957,12 @@ class GPE(ParallelEnv):
                 fontsize="medium",
             )
 
-            # plt.pause(0.5)
+            return self.fig
+        else:
+            print(
+                f"  Debug GPE.render: Exiting because render_mode is not 'human' (it is '{self.render_mode}')."
+            )
+            return None
 
     def close(self):
         """Close the rendering window."""

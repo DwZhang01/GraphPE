@@ -23,7 +23,7 @@ from policy.GNNPolicy import GNNPolicy
 
 # --- Helper Function ---
 def find_latest_run_dir(
-    base_dir: str = "models", prefix: str = "gnn_policy_run_"
+    base_dir: str = "models", prefix: str = "gnn_policy_"
 ) -> Optional[str]:
     """Finds the latest directory in base_dir matching the prefix and timestamp."""
     if not os.path.isdir(base_dir):
