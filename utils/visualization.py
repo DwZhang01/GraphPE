@@ -260,7 +260,7 @@ def visualize_policy(
             try:
                 env.render()  # Call the environment's render method
                 plt.pause(
-                    0.01
+                    0.1
                 )  # Add a brief pause to ensure the plot updates for frame capture
 
                 if save_animation:
