@@ -65,50 +65,50 @@ class GNNFeatureExtractor(BaseFeaturesExtractor):
             original_agent_indices.append(agent_idx_i)
 
             edge_index_i = edge_index_i.long()  ### Original ###
-            # {{ edit_1_start: Remove redundant edge filtering inside the loop }}
-            # valid_edge_mask_i = (edge_index_i[0, :] < self.num_nodes) & (  ### Original ###
-            #     edge_index_i[1, :] < self.num_nodes  ### Original ###
-            # )
-            # filtered_ei_i = edge_index_i[:, valid_edge_mask_i]  ### Original ###
 
-            # Use edge_index_i directly, assuming wrapper padded correctly
-            # and convolutions can handle potential disconnected padding nodes/edges.
+            # {{ edit_7_start: Re-introduce edge filtering inside the loop }}
+            # Filter out edges that use the padding index (self.num_nodes)
+            # The padding value was set in GNNEnvWrapper._update_graph_pyg
+            # Valid node indices are 0 to self.num_nodes - 1.
+            valid_edge_mask_i = (edge_index_i[0, :] < self.num_nodes) & (
+                edge_index_i[1, :] < self.num_nodes
+            )
+            filtered_ei_i = edge_index_i[:, valid_edge_mask_i]
+
+            # Use the filtered edge_index
             data = Data(
                 x=x_i,
-                edge_index=edge_index_i,
-                agent_idx_in_graph=agent_idx_i,  # Use edge_index_i instead of filtered_ei_i
+                edge_index=filtered_ei_i,  # Use filtered edge index
+                agent_idx_in_graph=agent_idx_i,
             )  ### Original ###
-            # {{ edit_1_end }}
+            # {{ edit_7_end }}
             data_list.append(data)
 
+        # Batch.from_data_list will now correctly handle the filtered edge indices
         try:
             batch_data = Batch.from_data_list(data_list).to(device)  ### Original ###
         except RuntimeError as e:
             print(f"Error creating PyG Batch: {e}")
-            # Handle potential errors if removing filter causes issues downstream
-            # For now, assume convolutions handle it gracefully.
-            # Consider adding specific error handling or alternative padding if needed.
             return torch.zeros((batch_size, self.features_dim), device=device)
 
-        # {{ edit_2: Apply convolutions using batch_data.edge_index directly }}
-        x = self.conv1(batch_data.x, batch_data.edge_index)  # Use batch_data.edge_index
+        # {{ edit_8: Convolutions now receive edge_index without padding values }}
+        # The batch_data.edge_index passed here will be correctly offset but
+        # will only contain indices corresponding to actual nodes (0 to num_nodes_in_batch - 1).
+        x = self.conv1(batch_data.x, batch_data.edge_index)
         if x.shape[0] > 0:
             x = self.norm1(x)
         x = self.relu(x)
         x = self.dropout(x)
-        x = self.conv2(
-            x, batch_data.edge_index
-        )  ### Original ### # Use batch_data.edge_index
+        x = self.conv2(x, batch_data.edge_index)
         if x.shape[0] > 0:
             x = self.norm2(x)
         x = self.relu(x)
         x = self.dropout(x)
 
-        x = self.conv3(
-            x, batch_data.edge_index
-        )  ### Original ### # Use batch_data.edge_index
+        x = self.conv3(x, batch_data.edge_index)
+        # {{ edit_8_end }}
 
-        # {{ edit_6_start: Refine vectorized feature extraction with clamping }}
+        # {{ edit_6_start: Refine vectorized feature extraction with clamping (This part should still be okay) }}
         # --- Vectorized Agent Feature Extraction (Refined) ---
         final_features = torch.zeros((batch_size, self.features_dim), device=device)
 
@@ -167,7 +167,7 @@ class GNNFeatureExtractor(BaseFeaturesExtractor):
 
         # else: no valid agents, final_features remains zeros
         # --- End Vectorized Extraction ---
-        # {{ edit_6_end }}
+        # {{ edit_6_end }} (Keep this vectorized part)
 
         return final_features
 
