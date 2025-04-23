@@ -11,8 +11,10 @@ from matplotlib.lines import Line2D
 from typing import Optional, Dict, List, Tuple, Any
 from gymnasium.utils import EzPickle
 
+# EzPickle
 
-class GPE(ParallelEnv, EzPickle):
+class GPE(ParallelEnv):
+    
     """
     Graph Pursuit Evasion (GPE) Environment
 
@@ -92,30 +94,30 @@ class GPE(ParallelEnv, EzPickle):
             delta_distance_reward_pursuer_scale (Optional[float]): Scaling factor for pursuer reward based on change in distance to evader (closer = positive delta). Defaults to None (disabled).
             delta_distance_penalty_evader_scale (Optional[float]): Scaling factor for evader penalty based on change in distance to pursuer (closer = positive delta). Should be negative. Defaults to None (disabled).
         """
-        EzPickle.__init__(
-            self,
-            num_nodes=num_nodes,
-            num_pursuers=num_pursuers,
-            num_evaders=num_evaders,
-            capture_distance=capture_distance,
-            required_captors=required_captors,
-            max_steps=max_steps,
-            seed=seed,
-            graph=graph,
-            render_mode=render_mode,
-            p_act=p_act,
-            capture_reward_pursuer=capture_reward_pursuer,
-            capture_reward_evader=capture_reward_evader,
-            escape_reward_evader=escape_reward_evader,
-            escape_reward_pursuer=escape_reward_pursuer,
-            stay_penalty=stay_penalty,
-            layout_algorithm=layout_algorithm,
-            allow_stay=allow_stay,
-            grid_m=grid_m,
-            grid_n=grid_n,
-            delta_distance_reward_pursuer_scale=delta_distance_reward_pursuer_scale,
-            delta_distance_penalty_evader_scale=delta_distance_penalty_evader_scale,
-        )
+        # EzPickle.__init__(
+        #     self,
+        #     num_nodes=num_nodes,
+        #     num_pursuers=num_pursuers,
+        #     num_evaders=num_evaders,
+        #     capture_distance=capture_distance,
+        #     required_captors=required_captors,
+        #     max_steps=max_steps,
+        #     seed=seed,
+        #     graph=graph,
+        #     render_mode=render_mode,
+        #     p_act=p_act,
+        #     capture_reward_pursuer=capture_reward_pursuer,
+        #     capture_reward_evader=capture_reward_evader,
+        #     escape_reward_evader=escape_reward_evader,
+        #     escape_reward_pursuer=escape_reward_pursuer,
+        #     stay_penalty=stay_penalty,
+        #     layout_algorithm=layout_algorithm,
+        #     allow_stay=allow_stay,
+        #     grid_m=grid_m,
+        #     grid_n=grid_n,
+        #     delta_distance_reward_pursuer_scale=delta_distance_reward_pursuer_scale,
+        #     delta_distance_penalty_evader_scale=delta_distance_penalty_evader_scale,
+        # )
         super().__init__()
         self.np_random = np.random.RandomState(seed)
         self.p_act = p_act
