@@ -259,6 +259,10 @@ def visualize_policy(
             # --- Render and Capture Frame ---
             try:
                 env.render()  # Call the environment's render method
+                plt.pause(
+                    0.01
+                )  # Add a brief pause to ensure the plot updates for frame capture
+
                 if save_animation:
                     fig = (
                         plt.gcf()
@@ -321,8 +325,6 @@ def visualize_policy(
                 print(f"Error during rendering or frame capture: {e}")
                 traceback.print_exc()
                 # Continue without this frame if possible
-
-            # plt.pause(0.1)  # Small pause to allow viewing
 
             # --- Check for Termination/Truncation ---
             # Check if ALL remaining agents are done (terminated or truncated)
