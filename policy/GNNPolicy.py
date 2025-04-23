@@ -57,7 +57,6 @@ class GNNFeatureExtractor(BaseFeaturesExtractor):
         data_list: List[Data] = []
         original_agent_indices = []
 
-        # Check for CPU single process
         for i in range(batch_size):
             x_i = node_features[i]
             edge_index_i = edge_indices[i]
