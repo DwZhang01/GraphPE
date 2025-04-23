@@ -57,6 +57,7 @@ class GNNFeatureExtractor(BaseFeaturesExtractor):
         data_list: List[Data] = []
         original_agent_indices = []
 
+        # Check for CPU single process
         for i in range(batch_size):
             x_i = node_features[i]
             edge_index_i = edge_indices[i]
@@ -107,57 +108,66 @@ class GNNFeatureExtractor(BaseFeaturesExtractor):
             x, batch_data.edge_index
         )  ### Original ### # Use batch_data.edge_index
 
-        # {{ edit_3_start: Optimize agent feature extraction loop slightly }}
-        # Extract agent features: This part is harder to fully vectorize due to batch_data.ptr
-        # Try to minimize python operations inside the loop by batching indexing if possible,
-        # though significant speedup might be limited here without deeper changes.
-        # The current approach is often necessary for heterogeneous batches.
-
-        absolute_agent_indices = []
-        valid_batch_indices = []
-        invalid_indices_found = False  # Flag to print warning only once
-
-        # Calculate start indices using batch_data.ptr
-        start_node_indices = batch_data.ptr[:-1]  # ptr has shape [batch_size + 1]
-
-        for i in range(batch_size):
-            agent_idx_in_graph_i = original_agent_indices[i]
-            if 0 <= agent_idx_in_graph_i < self.num_nodes:
-                # Calculate absolute index without intermediate python variables
-                absolute_index = start_node_indices[i] + agent_idx_in_graph_i
-                absolute_agent_indices.append(
-                    absolute_index.item()
-                )  # Still need .item() here for list append
-                valid_batch_indices.append(i)
-            else:
-                if not invalid_indices_found:  # Print only once
-                    print(
-                        f"Warning: Original agent index {agent_idx_in_graph_i} was invalid for batch item {i}. Skipping feature extraction. (Further warnings suppressed)"
-                    )
-                    invalid_indices_found = True
-
-        # Indexing after the loop
+        # {{ edit_6_start: Refine vectorized feature extraction with clamping }}
+        # --- Vectorized Agent Feature Extraction (Refined) ---
         final_features = torch.zeros((batch_size, self.features_dim), device=device)
-        if absolute_agent_indices:
-            absolute_agent_indices_tensor = torch.tensor(  ### Original ###
-                absolute_agent_indices, dtype=torch.long, device=device
-            )
-            # Check bounds before indexing x
-            if absolute_agent_indices_tensor.max() < x.shape[0]:
-                selected_features = x[absolute_agent_indices_tensor]
 
-                if selected_features.numel() > 0:
-                    valid_batch_indices_tensor = torch.tensor(
-                        valid_batch_indices, dtype=torch.long, device=device
-                    )
-                    final_features[valid_batch_indices_tensor] = selected_features
-            else:
-                print(
-                    f"Warning: Calculated absolute agent indices are out of bounds for feature tensor x. Max index: {absolute_agent_indices_tensor.max()}, x shape: {x.shape}. Returning zeros."
-                )
-        # else: # No valid agents, final_features remains zeros
-        #    selected_features = torch.empty((0, self.features_dim), device=device)
-        # {{ edit_3_end }}
+        # 1. Get start indices from batch_data.ptr
+        start_node_indices = batch_data.ptr[:-1]  # Shape: [batch_size]
+
+        # 2. Convert original agent indices to tensor
+        if not original_agent_indices:
+            # print("Warning: original_agent_indices list is empty. Returning zeros.") # Keep if needed
+            return final_features
+        try:
+            original_agent_indices_tensor = torch.tensor(
+                original_agent_indices, dtype=torch.long, device=device
+            )  # Shape: [batch_size]
+        except ValueError:
+            print("Error: Could not convert original_agent_indices to tensor.")
+            return final_features
+
+        # 3. Create a mask for valid agent indices (within graph bounds)
+        valid_mask = (original_agent_indices_tensor >= 0) & (
+            original_agent_indices_tensor < self.num_nodes
+        )  # Shape: [batch_size]
+
+        # 4. Calculate absolute indices for ALL agents
+        if start_node_indices.shape[0] != original_agent_indices_tensor.shape[0]:
+            print("Error: Mismatch between ptr size and original indices.")
+            return final_features
+        absolute_agent_indices_tensor = (
+            start_node_indices + original_agent_indices_tensor
+        )  # Shape: [batch_size]
+
+        # 5. Check GNN output 'x' and prepare for indexing
+        if x.nelement() == 0:
+            # if batch_size > 0: print("Warning: GNN output 'x' is empty.")
+            return final_features  # Return zeros
+
+        # Check if any originally valid indices exist before proceeding
+        if torch.any(valid_mask):
+            # *** Optimization: Clamp indices BEFORE indexing x to prevent potential out-of-bounds errors ***
+            # Clamp all absolute indices to be within the valid range of x's first dimension.
+            # Invalid indices (where valid_mask is False) will also be clamped, but their results won't be used later.
+            num_nodes_in_batch = x.shape[0]
+            absolute_agent_indices_clamped = torch.clamp(
+                absolute_agent_indices_tensor, min=0, max=num_nodes_in_batch - 1
+            )
+
+            # Index x using the clamped indices. This is now guaranteed to be safe.
+            selected_features = x[
+                absolute_agent_indices_clamped
+            ]  # Shape: [batch_size, features_dim]
+
+            # 6. Use the original valid_mask to place the correct features into the final result.
+            # This ensures that only features corresponding to originally valid and in-bounds
+            # agent indices are actually stored. Features from clamped invalid indices are ignored.
+            final_features[valid_mask] = selected_features[valid_mask]
+
+        # else: no valid agents, final_features remains zeros
+        # --- End Vectorized Extraction ---
+        # {{ edit_6_end }}
 
         return final_features
 
