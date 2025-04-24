@@ -17,8 +17,8 @@
         "escape_reward_pursuer": -5.0,
         "stay_penalty": -0.05,
         "allow_stay": false,
-        "delta_distance_reward_pursuer_scale": 0.05,
-        "delta_distance_penalty_evader_scale": -0.05
+        "delta_distance_reward_pursuer_scale": null,
+        "delta_distance_penalty_evader_scale": null
     },
     "training": {
         "TOTAL_STEPS": 1000000,
