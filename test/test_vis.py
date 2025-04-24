@@ -240,19 +240,34 @@ if __name__ == "__main__":
     m_layout = env_config.get("grid_m")  # Get layout hints if they were saved
     n_layout = env_config.get("grid_n")
 
+    # Remove grid dimensions from the dictionary as they will be passed explicitly
+    viz_env_init_config.pop(
+        "grid_m", None
+    )  # Use pop with default None to avoid KeyError if missing
+    viz_env_init_config.pop("grid_n", None)
+
     try:
+        # Now grid_m and grid_n are only provided via explicit keyword arguments
         viz_env_base_gnn = GPE(**viz_env_init_config, grid_m=m_layout, grid_n=n_layout)
-        # Only create wrapper if we are using the model
         viz_env_wrapper_gnn = (
             GNNEnvWrapper(viz_env_base_gnn) if not args.use_shortest else None
         )
         logging.info("Visualization environment and wrapper created.")
-    except Exception as e:
-        logging.error(f"Error creating visualization GPE instance: {e}", exc_info=True)
+    except TypeError as e:  # Keep the error handling
         logging.error(
-            f"Arguments passed to GPE: {list(viz_env_init_config.keys())}, m={m_layout}, n={n_layout}"
+            f"Error creating visualization GPE instance. Error: {e}", exc_info=True
         )
-        exit(1)
+        # Log the keys being passed AFTER popping
+        logging.error(
+            f"Arguments passed via **viz_env_init_config (after pop): {list(viz_env_init_config.keys())}"
+        )
+        logging.error(f"Explicit arguments: grid_m={m_layout}, grid_n={n_layout}")
+        exit()
+    except Exception as e:
+        logging.error(
+            f"Unexpected error creating visualization GPE instance: {e}", exc_info=True
+        )
+        exit()
 
     # --- Determine Visualization Parameters ---
     num_episodes_to_run = (
