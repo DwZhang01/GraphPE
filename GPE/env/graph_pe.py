@@ -70,6 +70,7 @@ class GPE(ParallelEnv):
         grid_n: Optional[int] = None,
         delta_distance_reward_pursuer_scale: Optional[float] = None,
         delta_distance_penalty_evader_scale: Optional[float] = None,
+        time_penalty: float = 0.0,
     ):
         """
         Initialize the GPE environment.
@@ -93,6 +94,7 @@ class GPE(ParallelEnv):
             allow_stay (bool): If False (default), agents must move to a neighbor. If True, staying in the current node is a valid action.
             delta_distance_reward_pursuer_scale (Optional[float]): Scaling factor for pursuer reward based on change in distance to evader (closer = positive delta). Defaults to None (disabled).
             delta_distance_penalty_evader_scale (Optional[float]): Scaling factor for evader penalty based on change in distance to pursuer (closer = positive delta). Should be negative. Defaults to None (disabled).
+            time_penalty (float): Time penalty applied to all agents at each step.
         """
         # EzPickle.__init__(
         #     self,
@@ -180,6 +182,7 @@ class GPE(ParallelEnv):
         self.escape_reward_evader = escape_reward_evader
         self.escape_reward_pursuer = escape_reward_pursuer
         self.stay_penalty = stay_penalty
+        self.time_penalty = time_penalty
 
     def _initialize_spaces(self):
         """Initialize action and observation spaces for all agents."""
@@ -455,7 +458,7 @@ class GPE(ParallelEnv):
             error_msg += f"Expected actions for: {list(active_agents_set)}."
             raise ValueError(error_msg)
 
-        self.rewards = {agent: 0 for agent in self.agents}
+        self.rewards = {agent: self.time_penalty for agent in actions.keys()}
         self.terminations = {agent: False for agent in self.agents}
         self.truncations = {agent: False for agent in self.agents}
         self.infos = {agent: {} for agent in self.agents}
@@ -498,7 +501,8 @@ class GPE(ParallelEnv):
             # Apply stay penalty only if staying is allowed and occurred
             if self.allow_stay and effective_action == current_position:
                 # Apply penalty only if staying is a valid option and the agent chose it
-                self.rewards[agent] += self.stay_penalty
+                if agent in self.rewards:
+                    self.rewards[agent] += self.stay_penalty
 
         self.agent_positions = next_positions
 
