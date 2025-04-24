@@ -116,6 +116,12 @@ if __name__ == "__main__":
         default=True,
         help="Use deterministic actions for the loaded model (default: True).",
     )
+    parser.add_argument(
+        "--pause",
+        type=float,
+        default=0.05,  # Default value matching visualize_policy default
+        help="Duration (in seconds) to pause after rendering each frame (e.g., 0.05, 0.1).",
+    )
 
     args = parser.parse_args()
 
@@ -294,6 +300,7 @@ if __name__ == "__main__":
         f"\n  Save Animation: {save_animation_flag}"
         f"\n  Animation FPS: {args.fps}"
         f"\n  Policy: {policy_desc}"
+        f"\n  Render Pause: {args.pause}"
         f"\n  Save Directory: {results_save_dir}"
     )
 
@@ -309,6 +316,7 @@ if __name__ == "__main__":
             save_dir=results_save_dir,
             animation_fps=args.fps,
             deterministic_actions=args.deterministic,  # Pass deterministic flag
+            pause_duration=args.pause,
         )
     except Exception as e:
         logging.error(f"An error occurred during visualization: {e}", exc_info=True)

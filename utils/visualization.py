@@ -34,6 +34,7 @@ def visualize_policy(
     save_dir: Optional[str] = None,
     animation_fps: int = 2,
     deterministic_actions: bool = True,
+    pause_duration: float = 0.2,  # Default value
 ) -> None:
     """
     Visualizes the execution of a policy (trained model or shortest path) in the GPE environment.
@@ -54,6 +55,7 @@ def visualize_policy(
         save_dir: Directory to save the animation GIF. If None, defaults to "results/viz_gifs".
         animation_fps: Frames per second for the saved GIF.
         deterministic_actions: Whether the model should predict actions deterministically.
+        pause_duration: Duration (in seconds) for plt.pause() after rendering each frame.
     """
     print("\n--- Starting Policy Visualization ---")
 
@@ -262,8 +264,8 @@ def visualize_policy(
                     env.render()
                 )  # Call the environment's render method, get figure
 
-                # Introduce a slightly longer pause AFTER rendering, BEFORE capture
-                plt.pause(0.05)  # Keep this pause
+                # Introduce a pause AFTER rendering, BEFORE capture
+                plt.pause(pause_duration)
 
                 if save_animation and returned_fig is not None:
                     # Use the returned figure directly
