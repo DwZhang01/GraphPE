@@ -7,7 +7,7 @@
     "environment": {
         "num_nodes": 50,
         "num_pursuers": 2,
-        "num_evaders": 1,
+        "num_evaders": 2,
         "max_steps": 30,
         "layout_algorithm": "grid",
         "p_act": 1,
