@@ -7,9 +7,6 @@ from typing import Dict, Any, List, Optional, Tuple
 
 # Import ParallelEnv directly for inheritance
 from pettingzoo.utils.env import ParallelEnv
-
-# Removed BaseWrapper import
-# from pettingzoo.utils.wrappers import BaseWrapper
 from torch_geometric.data import Data
 from torch_geometric.utils import from_networkx
 
@@ -18,10 +15,6 @@ from GPE.env.graph_pe import GPE
 
 # Inherit directly from ParallelEnv
 class GNNEnvWrapper(ParallelEnv):
-    """
-    Wraps the GPE environment to provide observations suitable for GNNs.
-    Removed shortest path and degree features for efficiency.
-    """
 
     metadata = {
         "render_modes": ["human", "rgb_array"],
@@ -47,11 +40,9 @@ class GNNEnvWrapper(ParallelEnv):
             f"GNNWrapper: Using {self.feature_dim} node features: {self._node_feature_list}"
         )
 
-        # {{ edit_1: Store allow_stay from base env }}
+
         self.allow_stay = self.env.allow_stay
-
         self.render_mode = self.env.render_mode
-
         self._observation_space = GymDict(
             {
                 "node_features": Box(
@@ -84,58 +75,37 @@ class GNNEnvWrapper(ParallelEnv):
         self._current_graph_pyg = None
         self.padded_edge_index = None
         self._graph_cache_valid = False  # Flag to track cache state
-        # self.all_pairs_shortest_path_lengths = None # Removed
 
-    # --- Implement Required ParallelEnv Methods ---
 
-    def render(self) -> Any:
-        """Delegates rendering to the base environment."""
-        return self.env.render()
 
-    def close(self) -> None:
-        """Closes the base environment."""
-        self.env.close()
-
-    # --- Implement Required Observation/Action Space Methods ---
-
-    # @functools.lru_cache(maxsize=None) # Use lru_cache if spaces are static
     def observation_space(self, agent: str) -> gym.spaces.Space:
         """Returns the observation space for a single agent."""
         # Returns the pre-defined Dict space for GNNs
         return self._observation_space
 
-    # @functools.lru_cache(maxsize=None)
+
     def action_space(self, agent: str) -> gym.spaces.Space:
         """Returns the action space for a single agent by delegating."""
         return self.env.action_space(agent)
 
-    # --- Delegate agents property ---
     @property
     def agents(self) -> List[str]:
         """Returns the list of currently active agents from the base environment."""
         return self.env.agents
 
-    # --- Helper methods for GNN observation ---
-    # (Keep _ensure_graph_updated, _update_graph_pyg, _create_node_features, _get_action_mask, _wrap_observation)
-    # Ensure they use self.env consistently to access the base GPE state.
 
     def _ensure_graph_updated(self):
         """Checks if the graph needs updating and calls _update_graph_pyg."""
         if not self._graph_cache_valid:  # Update only if cache is invalid
             if self.env.graph is None:
-                # This should ideally not happen after reset, but handle defensively
                 print(
                     "Error: Base env graph is None when trying to update. Ensure env is reset."
                 )
-                # Attempt reset if possible, or raise error. For now, raise.
-                # self.reset() # Avoid calling reset from here, could cause loops
                 raise RuntimeError(
                     "Graph is None in _ensure_graph_updated. Cannot proceed."
                 )
-            # print("Updating graph structure for PyG...") # Debug
             self._update_graph_pyg()
             self._graph_cache_valid = True  # Mark cache as valid after update
-            # print("Graph cache updated and marked as valid.") # Debug
 
     def _update_graph_pyg(self):
         """Converts the networkx graph to PyG Data object and extracts edge_index.
@@ -169,7 +139,6 @@ class GNNEnvWrapper(ParallelEnv):
                 num_nodes=current_num_nodes,
             )
 
-        # Padding logic
         num_edges = self._current_graph_pyg.edge_index.shape[1]
         max_edges = self.max_edges  # Use instance attribute
         if num_edges > max_edges:
@@ -182,9 +151,6 @@ class GNNEnvWrapper(ParallelEnv):
 
         pad_width = max_edges - current_edge_index.shape[1]
         if pad_width > 0:
-            # Use a padding value unlikely to be a real node index, e.g., -1 or num_nodes
-            # Using num_nodes might be okay if GNN ignores out-of-bound indices.
-            # Let's keep num_nodes for now based on previous logic, but -1 might be safer.
             padding_value = self.num_nodes  # Or potentially -1
             padding = torch.full((2, pad_width), padding_value, dtype=torch.long)
             edge_index_long = current_edge_index.long()
@@ -203,7 +169,6 @@ class GNNEnvWrapper(ParallelEnv):
         current_agent_pos = agent_positions.get(agent, -1)
         captured_evaders = self.env.captured_evaders
 
-        # Get indices from the defined list
         try:
             safe_node_idx = self._node_feature_list.index("is_safe_node")
             pursuer_count_idx = self._node_feature_list.index("pursuer_count")
@@ -310,26 +275,20 @@ class GNNEnvWrapper(ParallelEnv):
         }
         return obs_dict
 
-    # --- Override reset and step to return wrapped observations ---
 
     def reset(
         self, seed: int | None = None, options: dict | None = None
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Resets the environment and returns wrapped observations."""
-        # print("GNNWrapper: Resetting environment...") # Debug print
-        # {{ edit_7: Invalidate cache before reset }}
-        self._graph_cache_valid = False
-        # Reset the underlying parallel environment
-        observations_orig, infos = self.env.reset(seed=seed, options=options)
-        # Update graph structure after reset (will now use _ensure_graph_updated)
-        # print("GNNWrapper: Ensuring graph is updated after reset...") # Debug print
-        # self._ensure_graph_updated() # Called within _wrap_observation
 
-        # Wrap observations for all agents returned by the base reset
+        self._graph_cache_valid = False
+
+        observations_orig, infos = self.env.reset(seed=seed, options=options)
+
         observations_wrapped = {
             agent: self._wrap_observation(agent) for agent in self.agents
         }
-        # print(f"GNNWrapper: Reset complete. Returning obs for {list(observations_wrapped.keys())}") # Debug print
+
         return observations_wrapped, infos
 
     def step(self, actions: dict[str, Any]) -> tuple[
@@ -339,34 +298,20 @@ class GNNEnvWrapper(ParallelEnv):
         dict[str, bool],
         dict[str, Any],
     ]:
-        """Steps the environment and returns wrapped observations."""
-        # print(f"GNNWrapper: Stepping with actions for {list(actions.keys())}") # Debug print
-        # Step the underlying parallel environment
+
         observations_orig, rewards, terminations, truncations, infos = self.env.step(
             actions
         )
-        # {{ edit_8: Ensure graph is updated (uses cache) before wrapping obs }}
-        # If the graph can change dynamically mid-episode (unlikely here),
-        # we would need to invalidate the cache here based on some info flag.
-        # Assuming static graph per episode:
-        # self._ensure_graph_updated() # Called within _wrap_observation
 
         observations_wrapped = {
             agent: self._wrap_observation(agent) for agent in self.agents
         }
-        # print(f"GNNWrapper: Step complete. Returning obs for {list(observations_wrapped.keys())}") # Debug print
         return observations_wrapped, rewards, terminations, truncations, infos
 
-    # --- Pass through render and close ---
+
     def render(self) -> Any:
         return self.env.render()
 
     def close(self) -> None:
         self.env.close()
 
-    # It can be helpful to explicitly define __getattr__ if BaseWrapper doesn't cover everything
-    # def __getattr__(self, name):
-    #    """Returns an attribute with ``name``, unless ``name`` starts with an underscore."""
-    #    if name.startswith("_"):
-    #        raise AttributeError(f"accessing private attribute '{name}' is prohibited")
-    #    return getattr(self.env, name)
