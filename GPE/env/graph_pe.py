@@ -15,6 +15,7 @@ from gymnasium.utils import EzPickle
 
 
 class GPE(ParallelEnv):
+    count = 0 # Static class variable to track instantiations
 
     metadata = {
         "name": "graph_pe_v0",
@@ -45,8 +46,9 @@ class GPE(ParallelEnv):
         time_penalty: float = -0.05,
         revisit_penalty: float = -0.05,
     ):
-        
         super().__init__()
+        GPE.count += 1 # Increment the static counter
+        print(f"GPE instance created. Total instances: {GPE.count}") # Print the count
         self.np_random = np.random.RandomState(seed)
         self.num_pursuers = num_pursuers
         self.num_evaders = num_evaders
@@ -108,6 +110,7 @@ class GPE(ParallelEnv):
         self._visited_nodes = {agent: set() for agent in self.possible_agents} # Initialize visited nodes tracker
         
         print("GPE environment initialized...")
+        self.graph = self._generate_graph() # Initialize graph once
 
     def _initialize_spaces(self):
         """Initialize action and observation spaces for all agents."""
@@ -170,7 +173,7 @@ class GPE(ParallelEnv):
             self.np_random = np.random.RandomState(seed)
 
         self.timestep = 0
-        self.graph = self._generate_graph()
+        # self.graph = self._generate_graph() # Moved to __init__ for efficiency
         self._agents = self.possible_agents.copy()
         self.rewards = {agent: 0 for agent in self.agents}
         self.terminations = {agent: False for agent in self.agents}
