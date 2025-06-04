@@ -15,32 +15,6 @@ from gymnasium.utils import EzPickle
 
 
 class GPE(ParallelEnv):
-    """
-    Graph Pursuit Evasion (GPE) Environment
-
-    Multi-agent environment where pursuers try to catch evaders on a graph.
-    Evaders attempt to reach a safe node while avoiding capture.
-
-    Graph Representation:
-    - Nodes: Agent locations
-    - Edges: Valid movements
-    - Pursuers: Capture evaders by surrounding them
-    - Evaders: Reach safe node
-    - Capture: Occurs when enough pursuers are adjacent to an evader
-
-    Key Features:
-    - Configurable graph size/connectivity
-    - Multiple pursuers/evaders
-    - Customizable capture mechanics
-    - Multiple rendering modes
-    - Based on PettingZoo ParallelEnv
-
-    Follows Gymnasium interface:
-    - Discrete action space
-    - Dict observation space
-    - Step-based episodes
-    - Customizable termination
-    """
 
     metadata = {
         "name": "graph_pe_v0",
@@ -59,90 +33,42 @@ class GPE(ParallelEnv):
         graph=None,
         render_mode=None,
         p_act=1,
-        capture_reward_pursuer=20.0,
-        capture_reward_evader=-20.0,
-        escape_reward_evader=50.0,
-        escape_reward_pursuer=-50.0,
-        stay_penalty=-2.0,
-        layout_algorithm="spring",
+        capture_reward_pursuer=2.0,
+        capture_reward_evader=-2.0,
+        escape_reward_evader=5.0,
+        escape_reward_pursuer=-5.0,
+        stay_penalty=-0.05,
+        layout_algorithm="grid",
         allow_stay: bool = False,
         grid_m: Optional[int] = None,
         grid_n: Optional[int] = None,
-        delta_distance_reward_pursuer_scale: Optional[float] = None,
-        delta_distance_penalty_evader_scale: Optional[float] = None,
-        time_penalty: float = 0.0,
+        time_penalty: float = -0.05,
     ):
-        """
-        Initialize the GPE environment.
-
-        Args:
-            num_nodes: Number of nodes in the graph.
-            num_pursuers: Number of pursuer agents.
-            num_evaders: Number of evader agents.
-            capture_distance: Distance for capture (1=adjacent).
-            required_captors: Number of adjacent pursuers for capture.
-            max_steps: Max steps per episode.
-            seed: Random seed.
-            graph: Predefined networkx graph object. If None, generates random graph.
-            render_mode: 'human', 'rgb_array', or None.
-            p_act: Probability of ignoring action and staying.
-            capture_reward_pursuer: Reward for pursuers when capturing an evader.
-            capture_reward_evader: Reward for evader when being captured.
-            escape_reward_evader: Reward for evader when reaching safe node.
-            escape_reward_pursuer: Reward for pursuers when evader reaches safe node.
-            layout_algorithm (str): Layout algorithm for rendering ('spring', 'kamada_kawai', 'grid', 'spectral'). Defaults to 'spring'.
-            allow_stay (bool): If False (default), agents must move to a neighbor. If True, staying in the current node is a valid action.
-            delta_distance_reward_pursuer_scale (Optional[float]): Scaling factor for pursuer reward based on change in distance to evader (closer = positive delta). Defaults to None (disabled).
-            delta_distance_penalty_evader_scale (Optional[float]): Scaling factor for evader penalty based on change in distance to pursuer (closer = positive delta). Should be negative. Defaults to None (disabled).
-            time_penalty (float): Time penalty applied to all agents at each step.
-        """
-        # EzPickle.__init__(
-        #     self,
-        #     num_nodes=num_nodes,
-        #     num_pursuers=num_pursuers,
-        #     num_evaders=num_evaders,
-        #     capture_distance=capture_distance,
-        #     required_captors=required_captors,
-        #     max_steps=max_steps,
-        #     seed=seed,
-        #     graph=graph,
-        #     render_mode=render_mode,
-        #     p_act=p_act,
-        #     capture_reward_pursuer=capture_reward_pursuer,
-        #     capture_reward_evader=capture_reward_evader,
-        #     escape_reward_evader=escape_reward_evader,
-        #     escape_reward_pursuer=escape_reward_pursuer,
-        #     stay_penalty=stay_penalty,
-        #     layout_algorithm=layout_algorithm,
-        #     allow_stay=allow_stay,
-        #     grid_m=grid_m,
-        #     grid_n=grid_n,
-        #     delta_distance_reward_pursuer_scale=delta_distance_reward_pursuer_scale,
-        #     delta_distance_penalty_evader_scale=delta_distance_penalty_evader_scale,
-        # )
+        
         super().__init__()
         self.np_random = np.random.RandomState(seed)
+        self.num_pursuers = num_pursuers
+        self.num_evaders = num_evaders
+        self.capture_distance = capture_distance
+        self.required_captors = required_captors
+        self.max_steps = max_steps
+        self.render_mode = render_mode
         self.p_act = p_act
         self.layout_algorithm = layout_algorithm
         self.allow_stay = allow_stay
+
+
         self.grid_m = grid_m
         self.grid_n = grid_n
-
-        # Store delta distance reward parameters
-        self.delta_reward_pursuer_scale = delta_distance_reward_pursuer_scale
-        self.delta_penalty_evader_scale = delta_distance_penalty_evader_scale
-        # Initialize dictionary to store distances from the previous step
-        self.last_pursuer_evader_distances: Dict[Tuple[str, str], float] = {}
-
         self.custom_graph = graph
         if self.custom_graph is None:
             m = int(np.floor(np.sqrt(num_nodes)))
             n = int(np.ceil(num_nodes / m))
             actual_num_nodes = m * n
             self.num_nodes = actual_num_nodes
-            if self.grid_m == None:
+            if self.grid_m == 0:
                 self.grid_m = m
-            if self.grid_n == None:
+            if self.grid_n == 0:
                 self.grid_n = n
             print(
                 f"GPE Init: Grid graph generated ({m}x{n}). Actual num_nodes set to {self.num_nodes}"
@@ -153,16 +79,11 @@ class GPE(ParallelEnv):
                 f"GPE Init: Custom graph provided. Actual num_nodes set to {self.num_nodes}. Grid layout might require manual m, n if not inferred."
             )
 
-        self.num_pursuers = num_pursuers
-        self.num_evaders = num_evaders
-        self.capture_distance = capture_distance
-        self.required_captors = required_captors
-        self.max_steps = max_steps
-        self.render_mode = render_mode
 
         self.pursuers = [f"pursuer_{i}" for i in range(self.num_pursuers)]
         self.evaders = [f"evader_{i}" for i in range(self.num_evaders)]
-        self.possible_agents = self.pursuers + self.evaders
+        self.possible_agents = self.pursuers + self.evaders # All agents. Never changes.
+        self._agents = self.possible_agents.copy()  # All agents at start
 
         self._initialize_spaces()
 
@@ -170,7 +91,6 @@ class GPE(ParallelEnv):
         self.safe_node = None
         self.agent_positions = {}
         self.timestep = 0
-        self.agents = []
         self.rewards = None
         self.terminations = None
         self.truncations = None
@@ -183,9 +103,11 @@ class GPE(ParallelEnv):
         self.escape_reward_pursuer = escape_reward_pursuer
         self.stay_penalty = stay_penalty
         self.time_penalty = time_penalty
+        print("GPE environment initialized...")
 
     def _initialize_spaces(self):
         """Initialize action and observation spaces for all agents."""
+        # TODO: Change the space
         self.action_spaces = {
             agent: Discrete(self.num_nodes) for agent in self.possible_agents
         }
@@ -239,21 +161,22 @@ class GPE(ParallelEnv):
     def reset(self, seed=None, options=None):
         """Reset the environment. Attempts safe initial placement, falls back to random if needed."""
 
+        print("Resetting GPE environment...")
         if seed is not None:
             self.np_random = np.random.RandomState(seed)
 
-        self.graph = self._generate_graph()
         self.timestep = 0
-        self.agents = self.possible_agents.copy()
+        self.graph = self._generate_graph()
+        self._agents = self.possible_agents.copy()
         self.rewards = {agent: 0 for agent in self.agents}
         self.terminations = {agent: False for agent in self.agents}
         self.truncations = {agent: False for agent in self.agents}
-        self.infos = {agent: {} for agent in self.agents}
         self.captured_evaders = set()
-        self.last_pursuer_evader_distances = {}  # Reset the distance cache
+        # self.last_pursuer_evader_distances = {}  # Reset the distance cache
         all_nodes = list(self.graph.nodes())
         self.np_random.shuffle(all_nodes)  # Shuffle all nodes
         self.agent_positions = {}
+        infos = {agent: {} for agent in self.agents}
 
         # Ensure enough nodes total for all agents and the safe node
         required_nodes = self.num_pursuers + self.num_evaders + 1 # +1 for safe_node
@@ -273,102 +196,95 @@ class GPE(ParallelEnv):
         # Place Safe Node by popping from remaining shuffled nodes
         self.safe_node = int(all_nodes.pop())
 
-        # Calculate and store initial distances after agents are placed
-        self._update_last_distances()
-
         # Generate initial observations for all agents
         observations = {agent: self._get_observation(agent) for agent in self.agents}
 
         # Return standard reset format
-        return observations, self.infos
+        print("GPE environment reset complete.")
+        return observations, infos
+    
+    @property
+    def agents(self):
+        """Return the currently active agents."""
+        return self._agents
 
-    def _update_last_distances(self):
-        """Calculates and stores the current distances between all active P-E pairs."""
-        self.last_pursuer_evader_distances = {}  # Clear previous step's cache
-        active_pursuers = [p for p in self.pursuers if p in self.agent_positions]
-        active_evaders = [
-            e
-            for e in self.evaders
-            if e in self.agent_positions and e not in self.captured_evaders
-        ]
-
-        for p_agent in active_pursuers:
-            p_pos = self.agent_positions[p_agent]
-            for e_agent in active_evaders:
-                e_pos = self.agent_positions[e_agent]
-                pair = (p_agent, e_agent)
-                try:
-                    distance = nx.shortest_path_length(
-                        self.graph, source=p_pos, target=e_pos
-                    )
-                    self.last_pursuer_evader_distances[pair] = distance
-                except (nx.NetworkXNoPath, nx.NodeNotFound):
-                    # Store infinity or a large number if no path, or handle as needed
-                    self.last_pursuer_evader_distances[pair] = float("inf")
-                    # print(f"Warning: No path or node not found between {p_agent} ({p_pos}) and {e_agent} ({e_pos}) during distance update.")
-                    pass  # Silently handle for now
-
+    
     def _get_observation(self, agent):
         """Generate observation for an agent, including action mask."""
-
+        
+        # 对于已终止的agent，返回零观察
+        if self.terminations.get(agent, False):
+            return self._get_terminal_observation(agent)
+        
         position = self.agent_positions[agent]
         neighbors = list(self.graph.neighbors(position))
 
         adjacency_obs = np.zeros(self.num_nodes, dtype=np.float32)
         adjacency_obs[neighbors] = 1.0
 
-        pursuer_positions = np.array(
-            [self.agent_positions[p] for p in self.pursuers],
-            dtype=np.float32,
-        )
-        evader_positions = np.array(
-            [
-                self.agent_positions[e] if e not in self.captured_evaders else -1.0
-                for e in self.evaders
-            ],
-            dtype=np.float32,
-        )
+        # 获取所有pursuer位置（包括已终止的，用-1标记）
+        pursuer_positions = np.array([
+            self.agent_positions[p] if not self.terminations.get(p, False) else -1.0
+            for p in self.pursuers
+        ], dtype=np.float32)
+        
+        # 获取所有evader位置（被捕获或已终止的用-1标记）
+        evader_positions = np.array([
+            self.agent_positions[e] if (e not in self.captured_evaders and 
+                                    not self.terminations.get(e, False)) else -1.0
+            for e in self.evaders
+        ], dtype=np.float32)
 
+        # 计算action mask - 已终止的agent无有效动作
         action_mask = np.zeros(self.num_nodes, dtype=np.float32)
-        if self.allow_stay:
-            valid_action_indices = [position] + neighbors
-        else:
-            valid_action_indices = neighbors
-        valid_action_indices = [
-            idx for idx in valid_action_indices if 0 <= idx < self.num_nodes
-        ]
-        if valid_action_indices:
-            action_mask[valid_action_indices] = 1.0
-        elif self.allow_stay and (0 <= position < self.num_nodes):
-            action_mask[position] = 1.0
+        if not self.terminations.get(agent, False):
+            if self.allow_stay:
+                valid_action_indices = [position] + neighbors
+            else:
+                valid_action_indices = neighbors
+            
+            valid_action_indices = [
+                idx for idx in valid_action_indices if 0 <= idx < self.num_nodes
+            ]
+            if valid_action_indices:
+                action_mask[valid_action_indices] = 1.0
+            elif self.allow_stay and (0 <= position < self.num_nodes):
+                action_mask[position] = 1.0
 
+        # 构建观察向量
         if agent.startswith("evader"):
-            observation_vector = np.concatenate(
-                [
-                    np.array([float(position)], dtype=np.float32),
-                    pursuer_positions,
-                    evader_positions,
-                    adjacency_obs,
-                    action_mask,
-                    np.array([float(self.safe_node)], dtype=np.float32),
-                ]
-            ).astype(np.float32)
-        else:
-            base_vector = np.concatenate(
-                [
-                    np.array([float(position)], dtype=np.float32),
-                    pursuer_positions,
-                    evader_positions,
-                    adjacency_obs,
-                    action_mask,
-                ]
-            )
+            observation_vector = np.concatenate([
+                np.array([float(position)], dtype=np.float32),
+                pursuer_positions,
+                evader_positions,
+                adjacency_obs,
+                action_mask,
+                np.array([float(self.safe_node)], dtype=np.float32),
+            ]).astype(np.float32)
+        else:  # pursuer
+            base_vector = np.concatenate([
+                np.array([float(position)], dtype=np.float32),
+                pursuer_positions,
+                evader_positions,
+                adjacency_obs,
+                action_mask,
+            ])
             padding = np.zeros(self._pursuer_padding_size, dtype=np.float32)
-            observation_vector = np.concatenate([base_vector, padding]).astype(
-                np.float32
-            )
+            observation_vector = np.concatenate([base_vector, padding]).astype(np.float32)
 
         return observation_vector
+
+    def _get_terminal_observation(self, agent):
+        """为已终止的agent返回观察"""
+        # 计算观察向量的大小
+        if agent.startswith("evader"):
+            obs_size = (1 + len(self.pursuers) + len(self.evaders) + 
+                    self.num_nodes * 2 + 1)  # position + pursuers + evaders + adjacency + action_mask + safe_node
+        else:  # pursuer
+            obs_size = (1 + len(self.pursuers) + len(self.evaders) + 
+                    self.num_nodes * 2 + self._pursuer_padding_size)
+        
+        return np.zeros(obs_size, dtype=np.float32)
 
     def step(self, actions: Dict[str, int]) -> Tuple[
         Dict[str, np.ndarray],
@@ -377,10 +293,12 @@ class GPE(ParallelEnv):
         Dict[str, bool],
         Dict[str, Dict],
     ]:
-        """Execute actions for ---all-- agents and return new observations."""
-
-        active_agents_set = set(self.agents)
+        """Execute actions for all agents and return new observations."""
+        
+        # 1. 验证输入actions - 必须包含所有agents
+        active_agents_set = set(self.agents)  # 使用agents而不是possible_agents
         received_actions_set = set(actions.keys())
+        
         if not received_actions_set == active_agents_set:
             missing = active_agents_set - received_actions_set
             extra = received_actions_set - active_agents_set
@@ -392,258 +310,158 @@ class GPE(ParallelEnv):
             error_msg += f"Expected actions for: {list(active_agents_set)}."
             raise ValueError(error_msg)
 
-        self.rewards = {agent: self.time_penalty for agent in actions.keys()}
-        self.terminations = {agent: False for agent in self.agents}
-        self.truncations = {agent: False for agent in self.agents}
-        self.infos = {agent: {} for agent in self.agents}
+        # 2. 初始化返回字典 - 为所有agents创建
+        rewards = {agent: self.time_penalty for agent in self.agents}
+        terminations = {agent: self.terminations.get(agent, False) for agent in self.agents}
+        truncations = {agent: False for agent in self.agents}
+        infos = {agent: {} for agent in self.agents}
 
+        # 3. 执行动作 - 只处理未终止的agents
         next_positions = self.agent_positions.copy()
+        
         for agent, action in actions.items():
             if agent not in self.agents:
                 continue
+                
+            # 跳过已终止的agents
+            if self.terminations.get(agent, False):
+                continue
 
             current_position = self.agent_positions[agent]
+            
+            # 应用动作噪声
             if self.np_random.random() > self.p_act:
-                effective_action = current_position
+                effective_action = current_position  # 动作失效，保持原位
             else:
                 effective_action = action
 
+            # 验证动作有效性
             is_valid_move = (
-                effective_action == current_position
-                or effective_action in self.graph.neighbors(current_position)
+                effective_action == current_position or 
+                effective_action in self.graph.neighbors(current_position)
             )
+            
             if is_valid_move:
-                # Check if the intended action was valid based on allow_stay
-                # (This adds robustness in case an invalid 'stay' action gets through somehow)
+                # 检查stay动作的有效性
                 is_staying = effective_action == current_position
-                if (
-                    not self.allow_stay
-                    and is_staying
-                    and list(self.graph.neighbors(current_position))
-                ):
-                    # If staying is not allowed AND the agent chose to stay AND neighbors exist
-                    self.infos[agent]["invalid_action"] = True
-                    # Keep agent at current_position implicitly by not updating next_positions[agent] below
-                    # Or explicitly: next_positions[agent] = current_position
+                if (not self.allow_stay and is_staying and 
+                    list(self.graph.neighbors(current_position))):
+                    infos[agent]["invalid_action"] = True
+                    # 保持原位置
                 else:
-                    # Otherwise, the move (or stay if allowed) is fine
                     next_positions[agent] = effective_action
             else:
-                # Original invalid move logic (e.g., moving to non-neighbor)
-                self.infos[agent]["invalid_action"] = True
+                infos[agent]["invalid_action"] = True
+                # 保持原位置
 
-            # Apply stay penalty only if staying is allowed and occurred
-            if self.allow_stay and effective_action == current_position:
-                # Apply penalty only if staying is a valid option and the agent chose it
-                if agent in self.rewards:
-                    self.rewards[agent] += self.stay_penalty
+            # 应用stay penalty
+            if (self.allow_stay and effective_action == current_position and
+                hasattr(self, 'stay_penalty')):
+                rewards[agent] += self.stay_penalty
 
+        # 4. 更新位置
         self.agent_positions = next_positions
-
-        # --- Calculate Delta Distance Rewards (Optional) ---
-        current_step_distances = {}  # Store distances calculated in *this* step
-        if (
-            self.delta_reward_pursuer_scale is not None
-            or self.delta_penalty_evader_scale is not None
-        ):
-            active_pursuers = [
-                p
-                for p in self.pursuers
-                if p in self.agent_positions and p in self.agents
-            ]  # Check agent is still active
-            active_evaders = [
-                e
-                for e in self.evaders
-                if e in self.agent_positions
-                and e not in self.captured_evaders
-                and e in self.agents
-            ]  # Check agent is still active
-
-            for p_agent in active_pursuers:
-                p_pos = self.agent_positions[p_agent]
-                for e_agent in active_evaders:
-                    e_pos = self.agent_positions[e_agent]
-                    pair = (p_agent, e_agent)
-
-                    try:
-                        current_dist = nx.shortest_path_length(
-                            self.graph, source=p_pos, target=e_pos
-                        )
-                        current_step_distances[pair] = (
-                            current_dist  # Store current distance
-                        )
-
-                        # Get distance from the end of the *previous* step
-                        last_dist = self.last_pursuer_evader_distances.get(pair)
-
-                        # Calculate reward only if last distance exists (not first step, both agents were present)
-                        if (
-                            last_dist is not None
-                            and last_dist != float("inf")
-                            and current_dist != float("inf")
-                        ):
-                            delta_distance = (
-                                last_dist - current_dist
-                            )  # Positive if closer
-
-                            # Apply reward if distance decreased (delta > 0)
-                            if delta_distance > 0:
-                                if (
-                                    self.delta_reward_pursuer_scale is not None
-                                    and p_agent in self.rewards
-                                ):
-                                    self.rewards[p_agent] += (
-                                        self.delta_reward_pursuer_scale * delta_distance
-                                    )
-                                if (
-                                    self.delta_penalty_evader_scale is not None
-                                    and e_agent in self.rewards
-                                ):
-                                    # Ensure scale is negative for penalty
-                                    self.rewards[e_agent] += (
-                                        self.delta_penalty_evader_scale * delta_distance
-                                    )
-
-                            # Optional: Apply reward/penalty if distance increased (delta < 0)
-                            # elif delta_distance < 0:
-                            #    # Add logic here if you want to reward evader for increasing distance
-                            #    pass
-
-                    except (nx.NetworkXNoPath, nx.NodeNotFound) as e:
-                        # Store inf distance and handle exception (no reward calculation based on this)
-                        current_step_distances[pair] = float("inf")
-                        # print(f"Warning: No path or node not found between {p_agent} ({p_pos}) and {e_agent} ({e_pos}) during step.")
-                        pass  # Silently handle for now
-        # --- End Delta Distance Rewards ---
-
-        self._check_captures()
-        self._check_safe_arrivals()
+        
+        rewards,infos = self._check_captures(rewards,infos)
+        rewards,infos = self._check_safe_arrivals(rewards,infos)
         self._check_termination()
 
+        # 7. 更新时间步和截断
         self.timestep += 1
-
-        if self.timestep >= self.max_steps:
+        if hasattr(self, 'max_steps') and self.timestep >= self.max_steps:
             for agent in self.agents:
-                if not self.terminations[agent]:
-                    self.truncations[agent] = True
+                if not terminations[agent]:
+                    truncations[agent] = True
 
-        # --- Update the last distances cache *after* all checks and *before* removing agents
-        self.last_pursuer_evader_distances = current_step_distances
+        # 9. 生成观察 - 为所有agents生成（包括已终止的）
+        observations = {agent: self._get_observation(agent) for agent in self.agents}
 
-        # In this version of Supersuit, agents should not be removed from self.agents.
-        # Instead, their termination/truncation status is handled, and observations/rewards
-        # are provided for all possible agents.
-        # The self.agents list should remain constant (self.possible_agents) throughout the episode.
-        # The reset function already sets self.agents = self.possible_agents.copy()
+        # 10. 更新terminations状态
+        for agent in self.agents:
+            terminations[agent] = self.terminations.get(agent, False)
+        observations = {agent: self._get_observation(agent) for agent in self.agents}
 
-        # Generate observations for all possible agents
-        observations = {agent: self._get_observation(agent) for agent in self.possible_agents}
+        # Remove terminated or truncated agents from _agents
+        self._agents = [agent for agent in self._agents if not (terminations[agent] or truncations[agent])]
+        
+        return observations, rewards, terminations, truncations, infos
 
-        # Ensure rewards, terminations, truncations, infos dictionaries contain entries
-        # for all possible agents, as expected by PettingZoo Parallel API when black_death is not used.
-        final_rewards = {
-            agent: self.rewards.get(agent, 0) for agent in self.possible_agents
-        }
-        final_terminations = {
-            agent: self.terminations.get(agent, False) for agent in self.possible_agents
-        }
-        final_truncations = {
-            agent: self.truncations.get(agent, False) for agent in self.possible_agents
-        }
-        final_infos = {
-            agent: self.infos.get(agent, {}) for agent in self.possible_agents
-        }
-
-        return (
-            observations,
-            final_rewards,  # Return dicts relevant to input agents
-            final_terminations,
-            final_truncations,
-            final_infos,
-        )
-
-    def _check_captures(self):
+    def _check_captures(self,rewards,infos):
         """Check if any evaders have been captured."""
-        capture_occurred = False
 
         for evader in self.evaders:
-            if evader in self.captured_evaders:
+            if evader in self.captured_evaders or self.terminations.get(evader, False):
                 continue
-
+            
             evader_pos = self.agent_positions[evader]
             evader_neighbors = list(self.graph.neighbors(evader_pos))
 
             adjacent_pursuers = 0
             for pursuer in self.pursuers:
+                if self.terminations.get(pursuer, False):
+                    continue
+
                 pursuer_pos = self.agent_positions[pursuer]
                 if pursuer_pos == evader_pos or pursuer_pos in evader_neighbors:
                     adjacent_pursuers += 1
 
             if adjacent_pursuers >= self.required_captors:
                 self.captured_evaders.add(evader)
-                for pursuer in self.pursuers:
-                    self.rewards[pursuer] += self.capture_reward_pursuer
-                self.rewards[evader] += self.capture_reward_evader
                 self.terminations[evader] = True
-                capture_occurred = True
 
-            if capture_occurred:
+                for pursuer in self.pursuers:
+                    if not self.terminations.get(pursuer, False):
+                        rewards[pursuer] += self.capture_reward_pursuer
+                rewards[evader] += self.capture_reward_evader
+
                 for agent in self.agents:
-                    self.infos[agent]["capture"] = True
+                    if agent not in infos:
+                        infos[agent] = {}
+                    infos[agent]["capture"] = True
+        return rewards, infos
 
-    def _check_safe_arrivals(self):
+    def _check_safe_arrivals(self,rewards, infos):
         """Check if any evaders have reached the safe node."""
         escape_occurred_this_step = False  # Track if any escape happened
         for evader in self.evaders:
-            if evader in self.captured_evaders:
+            if evader in self.captured_evaders or self.terminations.get(evader, False):
                 continue
 
             if self.agent_positions[evader] == self.safe_node:
-                if evader in self.rewards:
-                    self.rewards[evader] += self.escape_reward_evader
-                    self.terminations[evader] = True
-                    # Keep the specific flag if needed for other purposes
-                    # self.infos[evader]["escape"] = True
-                    escape_occurred_this_step = True  # Mark that an escape happened
+                self.terminations[evader] = True
+                rewards[evader] += self.escape_reward_evader
+                escape_occurred_this_step = True  # Mark that an escape happened
 
-                    for pursuer in self.pursuers:
-                        if pursuer in self.rewards:
-                            self.rewards[pursuer] += self.escape_reward_pursuer
+                for pursuer in self.pursuers:
+                    if not self.terminations.get(pursuer, False):
+                        rewards[pursuer] += self.escape_reward_pursuer
+                        
 
-        # --- Start Edit: Add a general flag accessible by VecEnv ---
-        # If an escape happened, add a flag that's easier for the VecEnv wrapper to see.
-        # We add it to the info dict of the *first* active agent, as VecEnv wrappers
-        # often pick one agent's info or merge them.
-        if escape_occurred_this_step and self.agents:  # Ensure there are active agents
-            first_active_agent = self.agents[0]
-            if (
-                first_active_agent in self.infos
-            ):  # Make sure the agent is in the current infos dict
-                self.infos[first_active_agent]["escape_event"] = True
-            else:
-                # If the first agent somehow isn't in infos (shouldn't happen), create it
-                self.infos[first_active_agent] = {"escape_event": True}
-
-            # Optional: Add to all agents' infos if you prefer consistency,
-            # but adding to one is usually enough for VecEnv detection.
-            # for agent in self.agents:
-            #     if agent in self.infos:
-            #         self.infos[agent]["escape_event"] = True
-            #     else:
-            #         self.infos[agent] = {"escape_event": True}
-        # --- End Edit ---
+        if escape_occurred_this_step:
+            for agent in self.agents:
+                if agent not in infos:
+                    infos[agent] = {}
+                infos[agent]["escape_event"] = True
+        return rewards, infos
 
     def _check_termination(self):
         """Check if the overall game should terminate."""
-        active_evaders = set(self.evaders) - self.captured_evaders
-        evaders_at_safe_node = sum(
-            1 for e in active_evaders if self.agent_positions[e] == self.safe_node
-        )
+        active_evaders = []
+        for evader in self.evaders:
+            if evader not in self.captured_evaders and not self.terminations.get(evader, False):
+                active_evaders.append(evader)
 
-        if len(active_evaders) == 0 or evaders_at_safe_node == len(active_evaders):
+        game_over = False
+        if len(active_evaders) == 0:
+            game_over = True
+        elif all(self.agent_positions[e]== self.safe_node for e in active_evaders):
+            game_over = True
+
+        if game_over:
             for agent in self.agents:
-                if not self.terminations[agent]:
+                if not self.terminations.get(agent, False):
                     self.terminations[agent] = True
+
 
     def observation_space(self, agent):
         """Return the observation space for a specific agent."""
