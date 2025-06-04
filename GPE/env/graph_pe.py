@@ -252,92 +252,26 @@ class GPE(ParallelEnv):
         self.captured_evaders = set()
         self.last_pursuer_evader_distances = {}  # Reset the distance cache
         all_nodes = list(self.graph.nodes())
-        all_nodes_set = set(all_nodes)  # Use set for faster operations
+        self.np_random.shuffle(all_nodes)  # Shuffle all nodes
         self.agent_positions = {}
 
-        # Ensure enough nodes total
-        if len(all_nodes) < self.num_pursuers + self.num_evaders:
+        # Ensure enough nodes total for all agents and the safe node
+        required_nodes = self.num_pursuers + self.num_evaders + 1 # +1 for safe_node
+        if len(all_nodes) < required_nodes:
             raise ValueError(
-                f"Not enough nodes ({len(all_nodes)}) in the graph for all agents ({self.num_pursuers + self.num_evaders})."
+                f"Not enough nodes ({len(all_nodes)}) in the graph for all agents ({self.num_pursuers + self.num_evaders}) and a safe node."
             )
 
-        # 1. Place Pursuers
-        pursuer_nodes = self.np_random.choice(
-            all_nodes, size=self.num_pursuers, replace=False
-        )
-        for i, agent in enumerate(self.pursuers):
-            self.agent_positions[agent] = int(pursuer_nodes[i])
+        # Place Pursuers by popping from shuffled nodes
+        for agent in self.pursuers:
+            self.agent_positions[agent] = int(all_nodes.pop())
 
-        # Calculate nodes available *after* placing pursuers (needed for fallback)
-        pursuer_nodes_set = set(pursuer_nodes)
-        remaining_nodes = list(all_nodes_set - pursuer_nodes_set)
+        # Place Evaders by popping from shuffled nodes
+        for agent in self.evaders:
+            self.agent_positions[agent] = int(all_nodes.pop())
 
-        # Calculate Danger Zone
-        danger_zone = set(pursuer_nodes)
-        for p_node in pursuer_nodes:
-            try:
-                neighbors = set(self.graph.neighbors(p_node))
-                danger_zone.update(neighbors)
-            except nx.NetworkXError:
-                print(
-                    f"Warning: Pursuer node {p_node} not found in graph during danger zone calculation."
-                )
-
-        # Calculate Safe Zone for Evaders
-        safe_zone_for_evaders = list(all_nodes_set - danger_zone)
-
-        # Attempt to place evaders in the safe zone
-        if len(safe_zone_for_evaders) >= self.num_evaders:
-            # Place Evaders in the Safe Zone (Ideal Case)
-            # print("Placing evaders in calculated safe zone.")
-            evader_nodes = self.np_random.choice(
-                safe_zone_for_evaders, size=self.num_evaders, replace=False
-            )
-            for i, agent in enumerate(self.evaders):
-                self.agent_positions[agent] = int(evader_nodes[i])
-        else:
-            # Fallback: Place evaders randomly among remaining nodes (Not guaranteed safe)
-            print(
-                f"Warning: Safe zone ({len(safe_zone_for_evaders)} nodes) is too small for {self.num_evaders} evaders. "
-                f"Falling back to random placement in remaining {len(remaining_nodes)} nodes."
-            )
-            # Double-check if enough remaining nodes exist even for fallback
-            if len(remaining_nodes) < self.num_evaders:
-                # This should be caught by the initial total node check, but as a safeguard:
-                raise ValueError(
-                    f"Fallback failed: Not enough remaining nodes ({len(remaining_nodes)}) "
-                    f"to place {self.num_evaders} evaders after placing pursuers."
-                )
-            # Place evaders randomly in the nodes not occupied by pursuers
-            evader_nodes = self.np_random.choice(
-                remaining_nodes, size=self.num_evaders, replace=False
-            )
-            for i, agent in enumerate(self.evaders):
-                self.agent_positions[agent] = int(evader_nodes[i])
-
-        # Choose a safe node (must not be occupied by any agent)
-        occupied_nodes = set(self.agent_positions.values())
-        available_nodes_for_safe_node = list(all_nodes_set - occupied_nodes)
-        if available_nodes_for_safe_node:
-            self.safe_node = self.np_random.choice(available_nodes_for_safe_node)
-        else:
-            # ... (existing fallback logic for safe node placement remains the same) ...
-            pursuer_positions_set = {
-                self.agent_positions[p] for p in self.pursuers
-            }  # Need to recalculate based on final positions
-            evader_positions_set = {
-                self.agent_positions[e]
-                for e in self.evaders
-                if e in self.agent_positions
-            }  # Get final evader positions
-            non_pursuer_nodes = list(all_nodes_set - pursuer_positions_set)
-            if non_pursuer_nodes:
-                self.safe_node = self.np_random.choice(non_pursuer_nodes)
-            else:  # Should be impossible if checks above work
-                print(
-                    "Warning: Cannot find a suitable safe node placement. Placing randomly."
-                )
-                self.safe_node = self.np_random.choice(all_nodes)
+        # Place Safe Node by popping from remaining shuffled nodes
+        self.safe_node = int(all_nodes.pop())
 
         # Calculate and store initial distances after agents are placed
         self._update_last_distances()
@@ -596,46 +530,28 @@ class GPE(ParallelEnv):
         # --- Update the last distances cache *after* all checks and *before* removing agents
         self.last_pursuer_evader_distances = current_step_distances
 
-        # Filter agents for the next step
-        active_agents_next_step = []
-        original_action_keys = list(
-            actions.keys()
-        )  # Keep track of agents that took an action
-        agents_to_process = self.agents  # Agents active before filtering
+        # In this version of Supersuit, agents should not be removed from self.agents.
+        # Instead, their termination/truncation status is handled, and observations/rewards
+        # are provided for all possible agents.
+        # The self.agents list should remain constant (self.possible_agents) throughout the episode.
+        # The reset function already sets self.agents = self.possible_agents.copy()
 
-        for agent in agents_to_process:
-            # Only keep agents that are not terminated AND not truncated
-            if not self.terminations.get(agent, False) and not self.truncations.get(
-                agent, False
-            ):
-                active_agents_next_step.append(agent)
-        self.agents = active_agents_next_step  # Update the list of active agents for the *next* step
-
-        # Generate observations only for agents that took an action in the input `actions` dict
-        # and are still present (haven't been removed by termination/truncation logic implicitly)
-        observations = {}
-        for agent in original_action_keys:
-            if (
-                agent in self.agent_positions and agent in self.agents
-            ):  # Check if agent still exists and is active for next step
-                observations[agent] = self._get_observation(agent)
-            # else: # If agent terminated/truncated, PettingZoo API expects no observation for it next
-            #     pass
+        # Generate observations for all possible agents
+        observations = {agent: self._get_observation(agent) for agent in self.possible_agents}
 
         # Ensure rewards, terminations, truncations, infos dictionaries contain entries
-        # only for the agents that were passed in the input `actions` argument, as expected by PettingZoo Parallel API.
-        # Create new dicts containing only the relevant agents.
+        # for all possible agents, as expected by PettingZoo Parallel API when black_death is not used.
         final_rewards = {
-            agent: self.rewards.get(agent, 0) for agent in original_action_keys
+            agent: self.rewards.get(agent, 0) for agent in self.possible_agents
         }
         final_terminations = {
-            agent: self.terminations.get(agent, False) for agent in original_action_keys
+            agent: self.terminations.get(agent, False) for agent in self.possible_agents
         }
         final_truncations = {
-            agent: self.truncations.get(agent, False) for agent in original_action_keys
+            agent: self.truncations.get(agent, False) for agent in self.possible_agents
         }
         final_infos = {
-            agent: self.infos.get(agent, {}) for agent in original_action_keys
+            agent: self.infos.get(agent, {}) for agent in self.possible_agents
         }
 
         return (
