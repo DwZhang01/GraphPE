@@ -359,7 +359,7 @@ class GPE(ParallelEnv):
 
         # Apply revisit penalty and update visited nodes
         for agent, new_pos in next_positions.items():
-            if agent in self._visited_nodes and new_pos in self._visited_nodes[agent]:
+            if agent in self._visited_nodes and new_pos in self._visited_nodes[agent] and not self.terminations.get(agent, False) and not self.truncations.get(agent, False):
                 rewards[agent] += self.revisit_penalty
                 infos[agent]["revisit_penalty"] = True
             self._visited_nodes[agent].add(new_pos)
