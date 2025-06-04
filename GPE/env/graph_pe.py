@@ -43,6 +43,7 @@ class GPE(ParallelEnv):
         grid_m: Optional[int] = None,
         grid_n: Optional[int] = None,
         time_penalty: float = -0.05,
+        revisit_penalty: float = -0.05,
     ):
         
         super().__init__()
@@ -103,6 +104,9 @@ class GPE(ParallelEnv):
         self.escape_reward_pursuer = escape_reward_pursuer
         self.stay_penalty = stay_penalty
         self.time_penalty = time_penalty
+        self.revisit_penalty = revisit_penalty
+        self._visited_nodes = {agent: set() for agent in self.possible_agents} # Initialize visited nodes tracker
+        
         print("GPE environment initialized...")
 
     def _initialize_spaces(self):
@@ -172,6 +176,7 @@ class GPE(ParallelEnv):
         self.terminations = {agent: False for agent in self.agents}
         self.truncations = {agent: False for agent in self.agents}
         self.captured_evaders = set()
+        self._visited_nodes = {agent: set() for agent in self.possible_agents} # Reset visited nodes tracker
         # self.last_pursuer_evader_distances = {}  # Reset the distance cache
         all_nodes = list(self.graph.nodes())
         self.np_random.shuffle(all_nodes)  # Shuffle all nodes
@@ -295,8 +300,7 @@ class GPE(ParallelEnv):
     ]:
         """Execute actions for all agents and return new observations."""
         
-        # 1. 验证输入actions - 必须包含所有agents
-        active_agents_set = set(self.agents)  # 使用agents而不是possible_agents
+        active_agents_set = set(self.agents) 
         received_actions_set = set(actions.keys())
         
         if not received_actions_set == active_agents_set:
@@ -310,13 +314,11 @@ class GPE(ParallelEnv):
             error_msg += f"Expected actions for: {list(active_agents_set)}."
             raise ValueError(error_msg)
 
-        # 2. 初始化返回字典 - 为所有agents创建
         rewards = {agent: self.time_penalty for agent in self.agents}
         terminations = {agent: self.terminations.get(agent, False) for agent in self.agents}
         truncations = {agent: False for agent in self.agents}
         infos = {agent: {} for agent in self.agents}
 
-        # 3. 执行动作 - 只处理未终止的agents
         next_positions = self.agent_positions.copy()
         
         for agent, action in actions.items():
@@ -342,41 +344,40 @@ class GPE(ParallelEnv):
             )
             
             if is_valid_move:
-                # 检查stay动作的有效性
                 is_staying = effective_action == current_position
                 if (not self.allow_stay and is_staying and 
                     list(self.graph.neighbors(current_position))):
                     infos[agent]["invalid_action"] = True
-                    # 保持原位置
                 else:
                     next_positions[agent] = effective_action
             else:
                 infos[agent]["invalid_action"] = True
-                # 保持原位置
 
-            # 应用stay penalty
             if (self.allow_stay and effective_action == current_position and
                 hasattr(self, 'stay_penalty')):
                 rewards[agent] += self.stay_penalty
 
-        # 4. 更新位置
+        # Apply revisit penalty and update visited nodes
+        for agent, new_pos in next_positions.items():
+            if agent in self._visited_nodes and new_pos in self._visited_nodes[agent]:
+                rewards[agent] += self.revisit_penalty
+                infos[agent]["revisit_penalty"] = True
+            self._visited_nodes[agent].add(new_pos)
+
         self.agent_positions = next_positions
         
         rewards,infos = self._check_captures(rewards,infos)
         rewards,infos = self._check_safe_arrivals(rewards,infos)
         self._check_termination()
 
-        # 7. 更新时间步和截断
         self.timestep += 1
         if hasattr(self, 'max_steps') and self.timestep >= self.max_steps:
             for agent in self.agents:
                 if not terminations[agent]:
                     truncations[agent] = True
 
-        # 9. 生成观察 - 为所有agents生成（包括已终止的）
         observations = {agent: self._get_observation(agent) for agent in self.agents}
 
-        # 10. 更新terminations状态
         for agent in self.agents:
             terminations[agent] = self.terminations.get(agent, False)
         observations = {agent: self._get_observation(agent) for agent in self.agents}
