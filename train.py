@@ -29,6 +29,98 @@ from utils.callbacks import (
     DetailedDebugCallback,
 )
 
+# In train.py
+# In train.py
+
+import gymnasium
+from pettingzoo.utils.wrappers import BaseParallelWrapper
+import numpy as np
+# ... 其他导入 ...
+
+class BlackDeathWrapper(BaseParallelWrapper):
+    """
+    A simplified and correct "black death" wrapper.
+    It ensures the .agents list is static and properly pads observations
+    for dead agents, including Dict spaces.
+    """
+    def __init__(self, env):
+        super().__init__(env)
+        # The key to black death: the wrapper's agent list is static and based on possible_agents
+        self.agents = self.env.possible_agents[:]
+
+    def _zero_obs(self, agent_id: str):
+        """Creates a zeroed-out observation for a dead agent, handling Dict spaces."""
+        space = self.observation_space(agent_id)
+        if isinstance(space, gymnasium.spaces.Dict):
+            # Correctly handle Dict spaces by creating a dictionary of zeroed arrays
+            return {
+                key: np.zeros(sub_space.shape, dtype=sub_space.dtype)
+                for key, sub_space in space.spaces.items()
+            }
+        elif isinstance(space, gymnasium.spaces.Box):
+            return np.zeros(space.shape, dtype=space.dtype)
+        else:
+            raise TypeError(f"BlackDeathWrapper does not support padding for space of type {type(space)}")
+
+    def reset(self, **kwargs):
+        obss, infos = self.env.reset(**kwargs)
+        # Pad observations and infos to include all possible agents
+        padded_obss = {agent: obss.get(agent, self._zero_obs(agent)) for agent in self.agents}
+        padded_infos = {agent: infos.get(agent, {}) for agent in self.agents}
+        return padded_obss, padded_infos
+
+    def step(self, actions):
+        # Only pass actions for agents that are still active in the underlying environment
+        active_actions = {agent: actions[agent] for agent in self.env.agents if agent in actions}
+
+        obss, rews, terms, truncs, infos = self.env.step(active_actions)
+
+        # Pad all returned dictionaries to include all agents
+        padded_obss = {agent: obss.get(agent, self._zero_obs(agent)) for agent in self.agents}
+        padded_rews = {agent: rews.get(agent, 0.0) for agent in self.agents}
+        # For dead agents, they should be marked as both terminated and truncated
+        padded_terms = {agent: terms.get(agent, True) for agent in self.agents}
+        padded_truncs = {agent: truncs.get(agent, True) for agent in self.agents}
+        padded_infos = {agent: infos.get(agent, {}) for agent in self.agents}
+        
+        # After padding, the .agents list of the *underlying* env might be smaller, but this wrapper
+        # will always present the full list of agents and corresponding padded data.
+        return padded_obss, padded_rews, padded_terms, padded_truncs, padded_infos
+    
+from pettingzoo.utils.wrappers import BaseWrapper
+from gymnasium.spaces.utils import flatten_space, flatten
+
+class ManualFlattenParallelWrapper(BaseWrapper):
+    """
+    A custom wrapper for PettingZoo ParallelEnv that flattens dictionary observations.
+    This replaces ss.flatten_v0 to avoid potential bugs with Dict spaces.
+    """
+    def __init__(self, env):
+        super().__init__(env)
+        # Re-define the observation_space method to return the flattened space
+        # We use a lambda function because observation_space in ParallelEnv is a method
+        self.observation_space = lambda agent_id: flatten_space(self.env.observation_space(agent_id))
+
+    def reset(self, **kwargs):
+        # Get the original dictionary observation from the underlying environment
+        obs, info = self.env.reset(**kwargs)
+        # Flatten the observation for each agent
+        flat_obs = {
+            agent: flatten(self.env.observation_space(agent), agent_obs) 
+            for agent, agent_obs in obs.items()
+        }
+        return flat_obs, info
+
+    def step(self, actions):
+        # Get the original dictionary observation from the underlying environment
+        obs, rew, term, trunc, info = self.env.step(actions)
+        # Flatten the observation for each agent
+        flat_obs = {
+            agent: flatten(self.env.observation_space(agent), agent_obs) 
+            for agent, agent_obs in obs.items()
+        }
+        return flat_obs, rew, term, trunc, info
+    
 
 # Main execution
 if __name__ == "__main__":
@@ -224,15 +316,19 @@ if __name__ == "__main__":
     # === Instantiate Training Environment ===
     logging.info("Creating base GPE environment for training...")
     try:
-        base_env = GPE(
-            **gpe_init_config,  # Includes delta scales if defined in config
-            render_mode=None,  # Override render mode for training
-            grid_m=m,  # Pass grid dims explicitly
-            grid_n=n,
-        )
-        logging.info("Base training environment created.")
-        graph_conn_numpy = base_env.graph_connectivity
-        
+        # 1. 创建原始 GPE 环境
+        raw_gpe_env = GPE(**gpe_init_config, render_mode=None, grid_m=m, grid_n=n)
+        logging.info("Raw GPE training environment created.")
+
+        # NO LONGER NEED unflatten_info!
+        graph_conn_numpy = raw_gpe_env.graph_connectivity
+
+        # 2. 应用我们自己的 BlackDeathWrapper
+        # 不再需要 ManualFlattenParallelWrapper 和 supersuit.black_death
+        base_env_for_vectorization = BlackDeathWrapper(raw_gpe_env)
+        logging.info("Applied custom BlackDeathWrapper.")
+
+
     except TypeError as e:
         logging.error(
             f"Error creating GPE instance. Check config.json keys match GPE arguments. Error: {e}",
@@ -252,7 +348,7 @@ if __name__ == "__main__":
     logging.info("Attempting PettingZoo vectorization with Supersuit...")
     try:
         # Ensure the env passed is the GNNEnvWrapper instance
-        vec_env_intermediate = ss.pettingzoo_env_to_vec_env_v1(base_env)
+        vec_env_intermediate = ss.pettingzoo_env_to_vec_env_v1(base_env_for_vectorization)
         logging.info("pettingzoo_env_to_vec_env_v1 successful.")
         N_ENVS = config["training"]["N_ENVS"]
         N_CPUS = config["training"].get("N_CPUS", N_ENVS)
@@ -289,8 +385,9 @@ if __name__ == "__main__":
 
     policy_kwargs = {
         "features_extractor_class": GNNFeatureExtractor,
-        "features_extractor_kwargs": {"features_dim": nn_config["FEATURES_DIM"],
-                                      "graph_edge_index": graph_conn_numpy},
+        "features_extractor_kwargs": {
+            "features_dim": nn_config["FEATURES_DIM"],
+            "graph_edge_index": graph_conn_numpy},
         "net_arch": dict(
             pi=nn_config["PI_HIDDEN_DIMS"], vf=nn_config["VF_HIDDEN_DIMS"]
         ),

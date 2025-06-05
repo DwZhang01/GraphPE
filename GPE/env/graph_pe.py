@@ -215,7 +215,7 @@ class GPE(ParallelEnv):
     def reset(self, seed=None, options=None):
         """Reset the environment. Attempts safe initial placement, falls back to random if needed."""
 
-        print("Resetting GPE environment...")
+        # print("Resetting GPE environment...")
         if seed is not None:
             self.np_random = np.random.RandomState(seed)
 
@@ -254,7 +254,7 @@ class GPE(ParallelEnv):
         observations = {agent: self._get_observation(agent, node_occupancy=current_node_occupancy) for agent in self.agents}
 
         # Return standard reset format
-        print("GPE environment reset complete.")
+        # print("GPE environment reset complete.")
         return observations, infos
 
     

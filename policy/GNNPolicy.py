@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F # For ReLU if not using nn.ReLU() instance
-from typing import Dict, List
+from typing import Dict, List, Tuple
 from gymnasium.spaces import Dict as GymDict # Keep if observation_space type hint is this
 from gymnasium import spaces # For BaseFeaturesExtractor observation_space type hint
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
@@ -21,23 +21,17 @@ class GNNFeatureExtractor(BaseFeaturesExtractor):
     - Uses PyG Batching for efficient batch processing.
     """
 
-    def __init__(self, observation_space: spaces.Dict, features_dim: int = 64, graph_edge_index: np.ndarray = None):
+    def __init__(self, 
+                 observation_space: spaces.Dict, 
+                 features_dim: int = 64, 
+                 graph_edge_index: np.ndarray = None,
+                 ):
         super().__init__(observation_space, features_dim=features_dim)
 
-        assert isinstance(observation_space, spaces.Dict), \
-            "GNNFeatureExtractor expects a Dict observation space."
-        assert "node_features" in observation_space.spaces, \
-            "Observation space must contain 'node_features'."
-        assert "action_mask" in observation_space.spaces, \
-            "Observation space must contain 'action_mask'."
-        assert graph_edge_index is not None, \
-            "GNNFeatureExtractor requires 'graph_edge_index' to be provided in features_extractor_kwargs."
-
-        # Node features from GPE observation
-        # obs_space["node_features"].shape is (num_nodes, num_input_node_features)
+        assert isinstance(observation_space, spaces.Dict), "GNNFeatureExtractor expects a Dict observation space."
+        node_feature_dim = observation_space["node_features"].shape[1]
         self.gpe_num_nodes = observation_space["node_features"].shape[0]
-        input_node_feature_dim = observation_space["node_features"].shape[1]
-        
+
         # Store static graph edge index as a PyTorch tensor
         self.graph_edge_index_pt = torch.tensor(graph_edge_index, dtype=torch.long)
 
@@ -54,7 +48,7 @@ class GNNFeatureExtractor(BaseFeaturesExtractor):
         effective_hidden_dim_l1 = gnn_hidden_dim_per_head_l1 * heads_l1
         effective_hidden_dim_l2 = gnn_hidden_dim_per_head_l2 * heads_l2
         
-        self.conv1 = GATv2Conv(input_node_feature_dim, gnn_hidden_dim_per_head_l1, heads=heads_l1)
+        self.conv1 = GATv2Conv(node_feature_dim, gnn_hidden_dim_per_head_l1, heads=heads_l1)
         self.norm1 = nn.LayerNorm(effective_hidden_dim_l1)
         
         self.conv2 = GATv2Conv(effective_hidden_dim_l1, gnn_hidden_dim_per_head_l2, heads=heads_l2)
@@ -69,20 +63,22 @@ class GNNFeatureExtractor(BaseFeaturesExtractor):
         self.last_obs_for_policy: Dict[str, torch.Tensor] = None 
 
         logging.info(f"GNN Feature Extractor Initialized:")
-        logging.info(f"  Input node feature dim from GPE: {input_node_feature_dim}")
+        logging.info(f"  Input node feature dim from GPE: {node_feature_dim}")
         logging.info(f"  GPE num_nodes: {self.gpe_num_nodes}")
-        logging.info(f"  GNN Layer 1: GATv2Conv({input_node_feature_dim}, {gnn_hidden_dim_per_head_l1}) with {heads_l1} heads -> Dim: {effective_hidden_dim_l1}")
+        logging.info(f"  GNN Layer 1: GATv2Conv({node_feature_dim}, {gnn_hidden_dim_per_head_l1}) with {heads_l1} heads -> Dim: {effective_hidden_dim_l1}")
         logging.info(f"  GNN Layer 2: GATv2Conv({effective_hidden_dim_l1}, {gnn_hidden_dim_per_head_l2}) with {heads_l2} heads -> Dim: {effective_hidden_dim_l2}")
         logging.info(f"  GNN Layer 3: GATv2Conv({effective_hidden_dim_l2}, {features_dim}) with {heads_l3} heads -> Output Dim: {features_dim * heads_l3}") # Should be features_dim
         logging.info(f"  Output features_dim (for SB3 policy): {features_dim}")
 
 
     def forward(self, observations: Dict[str, torch.Tensor]) -> torch.Tensor:
-        # Store the raw observations if policy needs access (e.g., for action_mask)
-        # This is a common pattern in SB3 custom policies/extractors.
+
         self.last_obs_for_policy = observations
 
-        node_features_batch = observations["node_features"] # Shape: (batch_size, num_nodes, input_node_feature_dim)
+        node_features_batch = observations["node_features"]
+        # action_mask_batch = observations["action_mask"] # (如果需要的话)
+        
+
         batch_size = node_features_batch.shape[0]
         device = node_features_batch.device
 
