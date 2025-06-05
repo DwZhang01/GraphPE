@@ -107,8 +107,10 @@ class GPE(ParallelEnv):
         self._visited_nodes = {agent: set() for agent in self.possible_agents} # Initialize visited nodes tracker
         
         self.graph = self._generate_graph() # Initialize graph once
+        self.adj = {node: list(self.graph.neighbors(node)) for node in self.graph.nodes()}
 
         #--------add wrapper---------------------------------
+
         if self.graph.number_of_nodes() > 0:
             self.graph_edge_index = from_networkx(self.graph).edge_index.numpy()
         else:
@@ -250,7 +252,7 @@ class GPE(ParallelEnv):
             
             valid_action_indices = []
             if 0 <= current_position < self.num_nodes: # Check if current_position is a valid node index
-                neighbors = list(self.graph.neighbors(current_position))
+                neighbors = self.adj[current_position]
                 if self.allow_stay:
                     valid_action_indices = [current_position] + neighbors
                 else:
@@ -383,13 +385,13 @@ class GPE(ParallelEnv):
             # 验证动作有效性
             is_valid_move = (
                 effective_action == current_position or 
-                effective_action in self.graph.neighbors(current_position)
+                effective_action in self.adj[current_position]
             )
             
             if is_valid_move:
                 is_staying = effective_action == current_position
                 if (not self.allow_stay and is_staying and 
-                    list(self.graph.neighbors(current_position))):
+                    self.adj[current_position]):
                     infos[agent]["invalid_action"] = True
                 else:
                     next_positions[agent] = effective_action
@@ -436,7 +438,7 @@ class GPE(ParallelEnv):
                 continue
             
             evader_pos = self.agent_positions[evader]
-            evader_neighbors = list(self.graph.neighbors(evader_pos))
+            evader_neighbors = self.adj[evader_pos]
 
             adjacent_pursuers = 0
             for pursuer in self.pursuers:
@@ -811,7 +813,7 @@ class GPE(ParallelEnv):
                         continue
 
                 if nearest_pursuer_pos is not None:
-                    neighbors = list(self.graph.neighbors(current_pos))
+                    neighbors = self.adj[current_pos]
                     best_neighbor = None
                     max_escape_distance = -1
 
