@@ -1,10 +1,10 @@
 import os
-
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import wandb
 from wandb.integration.sb3 import WandbCallback
 # Search Wandb and 5 places in the code where it is used
-
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+os.environ["WANDB_SILENT"] = "true"  # Disable Wandb logging to console
+os.environ["WANDB_MODE"] = "offline"  # Disable Wandb online mode for this run
 import time
 import json
 import torch
@@ -16,9 +16,11 @@ from datetime import datetime
 import logging
 import sys
 import copy  # Import copy for deepcopy
+import gymnasium
 from GPE.env.graph_pe import GPE
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CallbackList
+from pettingzoo.utils.wrappers import BaseParallelWrapper
 from networkx.readwrite import json_graph
 import traceback
 from torch_geometric.nn import SAGEConv
@@ -31,14 +33,6 @@ from utils.callbacks import (
     EscapeDebugCallback,
     DetailedDebugCallback,
 )
-
-# In train.py
-# In train.py
-
-import gymnasium
-from pettingzoo.utils.wrappers import BaseParallelWrapper
-import numpy as np
-# ... 其他导入 ...
 
 class BlackDeathWrapper(BaseParallelWrapper):
     """
@@ -164,17 +158,14 @@ if __name__ == "__main__":
     # ==========================================
 
     # === Setup Run Directory and Timestamp ===
-    # ... (您已有的 run_name 和目录创建逻辑保持不变) ...
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_name = f"{base_run_name}_{timestamp}"
 
     # === Initialize Wandb ===
-    # 将所有配置信息传递给 wandb
-    # sync_tensorboard=True 会自动同步所有 SB3 记录的指标！
     run = wandb.init(
-        project="GraphPE-MARL",  # 您的项目名称，可以自定义
-        config=config,           # 将您的整个 config 字典上传
-        name=run_name,           # 使用您生成的时间戳命名，方便区分
+        project="GraphPE-MARL",  # 项目名称，可以自定义
+        config=config,           # 将整个 config 字典上传
+        name=run_name,           # 使用生成的时间戳命名，方便区分
         sync_tensorboard=True,   # 关键！自动同步SB3的TensorBoard日志
         save_code=True,          # 保存主脚本的代码
     )
@@ -302,15 +293,9 @@ if __name__ == "__main__":
     # === Instantiate Training Environment ===
     logging.info("Creating base GPE environment for training...")
     try:
-        # 1. 创建原始 GPE 环境
         raw_gpe_env = GPE(**gpe_init_config, render_mode=None, grid_m=m, grid_n=n)
         logging.info("Raw GPE training environment created.")
-
-        # NO LONGER NEED unflatten_info!
         graph_conn_numpy = raw_gpe_env.graph_connectivity
-
-        # 2. 应用我们自己的 BlackDeathWrapper
-        # 不再需要 ManualFlattenParallelWrapper 和 supersuit.black_death
         base_env_for_vectorization = BlackDeathWrapper(raw_gpe_env)
         logging.info("Applied custom BlackDeathWrapper.")
 
@@ -330,10 +315,9 @@ if __name__ == "__main__":
         logging.error(f"Unexpected error creating GPE instance: {e}", exc_info=True)
         exit()
 
-    # === Vectorize Training Environment (Keep as is) ===
+    # === Vectorize Training Environment ===
     logging.info("Attempting PettingZoo vectorization with Supersuit...")
     try:
-        # Ensure the env passed is the GNNEnvWrapper instance
         vec_env_intermediate = ss.pettingzoo_env_to_vec_env_v1(base_env_for_vectorization)
         logging.info("pettingzoo_env_to_vec_env_v1 successful.")
         N_ENVS = config["training"]["N_ENVS"]
