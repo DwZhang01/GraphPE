@@ -242,21 +242,21 @@ class GNNPolicy(ActorCriticPolicy):
                 torch.full_like(mean_actions, -1e9), # Use full_like for safety
             )
             
-            # Check for samples where all actions might be masked
-            # (e.g., if an agent has no valid moves, which GPE's _get_action_mask should prevent if possible)
-            if not torch.any(action_masks.bool(), dim=1).all():
-                # This means for at least one sample in the batch, all actions are masked.
-                # Iterate and log details for such samples.
-                for i in range(action_masks.shape[0]):
-                    if not torch.any(action_masks[i].bool()):
-                        logging.warning(
-                            f"Sample {i} in batch has all actions masked. "
-                            f"Logits before mask: {mean_actions[i].detach().cpu().numpy()}. "
-                            f"Mask: {action_masks[i].detach().cpu().numpy()}"
-                        )
-                        # You might want to add a small probability to all actions or a default action
-                        # to prevent potential NaNs if the policy must select an action.
-                        # For now, SB3's CategoricalDistribution might handle it by picking one randomly from the all-low-logit actions.
+            # # Check for samples where all actions might be masked
+            # # (e.g., if an agent has no valid moves, which GPE's _get_action_mask should prevent if possible)
+            # if not torch.any(action_masks.bool(), dim=1).all():
+            #     # This means for at least one sample in the batch, all actions are masked.
+            #     # Iterate and log details for such samples.
+            #     for i in range(action_masks.shape[0]):
+            #         if not torch.any(action_masks[i].bool()):
+            #             logging.warning(
+            #                 f"Sample {i} in batch has all actions masked. "
+            #                 f"Logits before mask: {mean_actions[i].detach().cpu().numpy()}. "
+            #                 f"Mask: {action_masks[i].detach().cpu().numpy()}"
+            #             )
+            #             # You might want to add a small probability to all actions or a default action
+            #             # to prevent potential NaNs if the policy must select an action.
+            #             # For now, SB3's CategoricalDistribution might handle it by picking one randomly from the all-low-logit actions.
             
             return self.action_dist.proba_distribution(action_logits=masked_logits)
         else:

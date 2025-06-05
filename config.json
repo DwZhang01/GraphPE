@@ -5,9 +5,9 @@
         "FEATURES_DIM": 128
     },
     "environment": {
-        "num_nodes": 50,
+        "num_nodes": 100,
         "num_pursuers": 2,
-        "num_evaders": 1,
+        "num_evaders": 2,
         "capture_distance": 0,
         "required_captors": 1,
         "max_steps": 30,
