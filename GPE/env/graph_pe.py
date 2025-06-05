@@ -191,6 +191,27 @@ class GPE(ParallelEnv):
 
         return graph
 
+    def _build_node_occupancy_map(self) -> Dict[int, Dict[str, List[str]]]:
+        """
+        Builds a map from node index to lists of active pursuers and evaders at that node.
+        """
+        node_occupancy = {i: {'pursuers': [], 'evaders': []} for i in range(self.num_nodes)}
+
+        for p_id in self.pursuers:
+            if not self.terminations.get(p_id, False): # Check if pursuer is active
+                pos = self.agent_positions.get(p_id)
+                if pos is not None and 0 <= pos < self.num_nodes:
+                    node_occupancy[pos]['pursuers'].append(p_id)
+
+        for e_id in self.evaders:
+            if e_id not in self.captured_evaders and \
+            not self.terminations.get(e_id, False): # Check if evader is active and not captured
+                pos = self.agent_positions.get(e_id)
+                if pos is not None and 0 <= pos < self.num_nodes:
+                    node_occupancy[pos]['evaders'].append(e_id)
+
+        return node_occupancy
+    
     def reset(self, seed=None, options=None):
         """Reset the environment. Attempts safe initial placement, falls back to random if needed."""
 
@@ -229,7 +250,8 @@ class GPE(ParallelEnv):
         self.safe_node = int(all_nodes.pop())
 
         # Generate initial observations for all agents
-        observations = {agent: self._get_observation(agent) for agent in self.agents}
+        current_node_occupancy = self._build_node_occupancy_map()
+        observations = {agent: self._get_observation(agent, node_occupancy=current_node_occupancy) for agent in self.agents}
 
         # Return standard reset format
         print("GPE environment reset complete.")
@@ -270,53 +292,41 @@ class GPE(ParallelEnv):
             
             return action_mask
     
-    def _get_node_features(self, agent_id: str) -> np.ndarray:
+    def _get_node_features(self, agent_id: str, node_occupancy: Dict[int, Dict[str, List[str]]]) -> np.ndarray:
         """
-        Generate node features for the GNN.
+        Generate node features for the GNN using a precomputed node_occupancy map.
         Features: "is_self", "is_pursuer", "is_evader", "is_safe_node"
         """
         node_features = np.zeros((self.num_nodes, self.feature_dim), dtype=np.float32)
-        
-        current_agent_pos = self.agent_positions.get(agent_id, -1) # Use -1 if agent has no position
+        current_agent_pos = self.agent_positions.get(agent_id, -1) 
 
         for node_idx in range(self.num_nodes):
             features = np.zeros(self.feature_dim, dtype=np.float32)
-            
-            # "is_self"
+
             if node_idx == current_agent_pos:
                 features[self._node_feature_list.index("is_self")] = 1.0
-            
-            # "is_pursuer"
-            for p_id in self.pursuers:
-                if not self.terminations.get(p_id, False) and \
-                   self.agent_positions.get(p_id) == node_idx:
-                    features[self._node_feature_list.index("is_pursuer")] = 1.0
-                    break # One pursuer is enough to mark the node
-            
-            # "is_evader"
-            for e_id in self.evaders:
-                if e_id not in self.captured_evaders and \
-                   not self.terminations.get(e_id, False) and \
-                   self.agent_positions.get(e_id) == node_idx:
-                    features[self._node_feature_list.index("is_evader")] = 1.0
-                    break # One evader is enough
-            
-            # "is_safe_node"
+
+            if node_occupancy[node_idx]['pursuers']:
+                features[self._node_feature_list.index("is_pursuer")] = 1.0
+
+            if node_occupancy[node_idx]['evaders']: 
+                features[self._node_feature_list.index("is_evader")] = 1.0
+
             if node_idx == self.safe_node:
                 features[self._node_feature_list.index("is_safe_node")] = 1.0
-                
+
             node_features[node_idx] = features
-            
+
         return node_features
-
-    def _get_observation(self, agent_id: str) -> Dict[str, np.ndarray]:
-
+    
+    def _get_observation(self, agent_id: str, node_occupancy: Dict[int, Dict[str, List[str]]]) -> Dict[str, np.ndarray]: # 添加参数
+        
         if self.terminations.get(agent_id, False) or agent_id not in self._agents:
             return self._get_terminal_observation(agent_id)
 
-        node_feats = self._get_node_features(agent_id)
+        node_feats = self._get_node_features(agent_id, node_occupancy) # 传递占用地图
         action_m = self._get_action_mask(agent_id)
-        
+
         return {
             "node_features": node_feats,
             "action_mask": action_m,
@@ -417,16 +427,19 @@ class GPE(ParallelEnv):
 
         self.timestep += 1
         if hasattr(self, 'max_steps') and self.timestep >= self.max_steps:
-            for agent in self.agents:
-                if not terminations[agent]:
+            for agent in list(rewards.keys()):
+                if not terminations.get(agent):
                     truncations[agent] = True
 
-        for agent in self.agents:
-            terminations[agent] = self.terminations.get(agent, False)
-        observations = {agent: self._get_observation(agent) for agent in self.agents}
+        for agent_id_iter in active_agents_set:
+            terminations[agent_id_iter] = self.terminations.get(agent_id_iter, False)
+        
+        current_node_occupancy = self._build_node_occupancy_map()
 
+        observations = {agent: self._get_observation(agent,current_node_occupancy) for agent in active_agents_set}
+        
         # Remove terminated or truncated agents from _agents
-        self._agents = [agent for agent in self._agents if not (terminations[agent] or truncations[agent])]
+        self._agents = [agent for agent in active_agents_set if not (terminations.get(agent,False) or truncations.get(agent,False))]
         
         return observations, rewards, terminations, truncations, infos
 

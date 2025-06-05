@@ -19,7 +19,6 @@ from stable_baselines3.common.callbacks import CallbackList
 from networkx.readwrite import json_graph
 import traceback
 from torch_geometric.nn import SAGEConv
-from utils.wrappers.GNNEnvWrapper import GNNEnvWrapper
 from policy.GNNPolicy import GNNFeatureExtractor, GNNPolicy
 from pettingzoo.utils import ParallelEnv
 from gymnasium import spaces
@@ -216,13 +215,11 @@ if __name__ == "__main__":
     # ============================
 
     # === Prepare Config for GPE Instantiation ===
-    gpe_init_config = env_config.copy()  # Shallow copy is fine here
-    # Add the actual graph object
+    gpe_init_config = env_config.copy()  
     gpe_init_config["graph"] = base_graph
-    # Remove keys not expected by GPE.__init__
+
     gpe_init_config.pop("use_preset_graph", None)
     gpe_init_config.pop("preset_graph", None)
-    # The delta reward scales are already in gpe_init_config if they were in the original file
 
     # === Instantiate Training Environment ===
     logging.info("Creating base GPE environment for training...")
@@ -234,6 +231,8 @@ if __name__ == "__main__":
             grid_n=n,
         )
         logging.info("Base training environment created.")
+        graph_conn_numpy = base_env.graph_connectivity
+        
     except TypeError as e:
         logging.error(
             f"Error creating GPE instance. Check config.json keys match GPE arguments. Error: {e}",
@@ -249,31 +248,21 @@ if __name__ == "__main__":
         logging.error(f"Unexpected error creating GPE instance: {e}", exc_info=True)
         exit()
 
-    # === Wrap and Vectorize Training Environment (Keep as is) ===
-    logging.info("Wrapping environment with GNNEnvWrapper...")
-    try:
-        env = GNNEnvWrapper(base_env)
-        logging.info("GNNEnvWrapper created.")
-        logging.info(f"Wrapped env agents (initial): {env.agents}")
-        logging.info(f"Wrapped env possible_agents: {env.possible_agents}")
-    except Exception as e:
-        logging.error(f"Error creating GNNEnvWrapper: {e}", exc_info=True)
-        raise
-
+    # === Vectorize Training Environment (Keep as is) ===
     logging.info("Attempting PettingZoo vectorization with Supersuit...")
     try:
         # Ensure the env passed is the GNNEnvWrapper instance
-        vec_env = ss.pettingzoo_env_to_vec_env_v1(env)
+        vec_env_intermediate = ss.pettingzoo_env_to_vec_env_v1(base_env)
         logging.info("pettingzoo_env_to_vec_env_v1 successful.")
         N_ENVS = config["training"]["N_ENVS"]
         N_CPUS = config["training"].get("N_CPUS", N_ENVS)
         vec_env = ss.concat_vec_envs_v1(
-            vec_env,
+            vec_env_intermediate,
             num_vec_envs=N_ENVS,
             num_cpus=N_CPUS,
             base_class="stable_baselines3",
         )
-        logging.info("concat_vec_envs_v1 successful.")
+        logging.info("concat_vec_envs_v1 successful. N_ENVS={N_ENVS}, N_CPUS={N_CPUS}")
         logging.info("Vectorization successful using Supersuit.")
     except Exception as e:
         logging.error(
@@ -300,7 +289,8 @@ if __name__ == "__main__":
 
     policy_kwargs = {
         "features_extractor_class": GNNFeatureExtractor,
-        "features_extractor_kwargs": {"features_dim": nn_config["FEATURES_DIM"]},
+        "features_extractor_kwargs": {"features_dim": nn_config["FEATURES_DIM"],
+                                      "graph_edge_index": graph_conn_numpy},
         "net_arch": dict(
             pi=nn_config["PI_HIDDEN_DIMS"], vf=nn_config["VF_HIDDEN_DIMS"]
         ),
