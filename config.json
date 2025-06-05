@@ -5,12 +5,12 @@
         "FEATURES_DIM": 128
     },
     "environment": {
-        "num_nodes": 100,
+        "num_nodes": 400,
         "num_pursuers": 2,
         "num_evaders": 2,
         "capture_distance": 0,
         "required_captors": 1,
-        "max_steps": 30,
+        "max_steps": 100,
         "layout_algorithm": "grid",
         "p_act": 1,
         "capture_reward_pursuer": 0,
@@ -24,9 +24,9 @@
         "seed": 42
     },
     "training": {
-        "TOTAL_STEPS": 100000,
-        "N_STEPS": 512,
-        "BATCH_SIZE": 256,
+        "TOTAL_STEPS": 1000000,
+        "N_STEPS": 2048,
+        "BATCH_SIZE": 512,
         "N_EPOCHS": 10,
         "GAMMA": 0.99,
         "GAE_LAMBDA": 0.95,
@@ -35,7 +35,7 @@
         "VF_COEF": 1.0,
         "LEARNING_RATE": 1e-4,
         "N_ENVS": 10,
-        "N_CPUS": 1,
+        "N_CPUS": 8,
         "PREFERRED_DEVICE": "cuda",
         "MODEL_SAVE_NAME": "gnn_policy",
         "CALLBACK_VERBOSE": 0,

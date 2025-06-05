@@ -1,6 +1,9 @@
 import os
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+import wandb
+from wandb.integration.sb3 import WandbCallback
+# Search Wandb and 5 places in the code where it is used
 
 import time
 import json
@@ -87,40 +90,6 @@ class BlackDeathWrapper(BaseParallelWrapper):
         # will always present the full list of agents and corresponding padded data.
         return padded_obss, padded_rews, padded_terms, padded_truncs, padded_infos
     
-from pettingzoo.utils.wrappers import BaseWrapper
-from gymnasium.spaces.utils import flatten_space, flatten
-
-class ManualFlattenParallelWrapper(BaseWrapper):
-    """
-    A custom wrapper for PettingZoo ParallelEnv that flattens dictionary observations.
-    This replaces ss.flatten_v0 to avoid potential bugs with Dict spaces.
-    """
-    def __init__(self, env):
-        super().__init__(env)
-        # Re-define the observation_space method to return the flattened space
-        # We use a lambda function because observation_space in ParallelEnv is a method
-        self.observation_space = lambda agent_id: flatten_space(self.env.observation_space(agent_id))
-
-    def reset(self, **kwargs):
-        # Get the original dictionary observation from the underlying environment
-        obs, info = self.env.reset(**kwargs)
-        # Flatten the observation for each agent
-        flat_obs = {
-            agent: flatten(self.env.observation_space(agent), agent_obs) 
-            for agent, agent_obs in obs.items()
-        }
-        return flat_obs, info
-
-    def step(self, actions):
-        # Get the original dictionary observation from the underlying environment
-        obs, rew, term, trunc, info = self.env.step(actions)
-        # Flatten the observation for each agent
-        flat_obs = {
-            agent: flatten(self.env.observation_space(agent), agent_obs) 
-            for agent, agent_obs in obs.items()
-        }
-        return flat_obs, rew, term, trunc, info
-    
 
 # Main execution
 if __name__ == "__main__":
@@ -194,6 +163,23 @@ if __name__ == "__main__":
     os.makedirs(logs_save_dir, exist_ok=True)
     # ==========================================
 
+    # === Setup Run Directory and Timestamp ===
+    # ... (您已有的 run_name 和目录创建逻辑保持不变) ...
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_name = f"{base_run_name}_{timestamp}"
+
+    # === Initialize Wandb ===
+    # 将所有配置信息传递给 wandb
+    # sync_tensorboard=True 会自动同步所有 SB3 记录的指标！
+    run = wandb.init(
+        project="GraphPE-MARL",  # 您的项目名称，可以自定义
+        config=config,           # 将您的整个 config 字典上传
+        name=run_name,           # 使用您生成的时间戳命名，方便区分
+        sync_tensorboard=True,   # 关键！自动同步SB3的TensorBoard日志
+        save_code=True,          # 保存主脚本的代码
+    )
+    logging.info(f"Wandb run initialized. Name: {run.name}, URL: {run.url}")
+    
     # === Configure Logging ===
     log_file_path = os.path.join(logs_save_dir, "run.log")
     log_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
@@ -425,6 +411,14 @@ if __name__ == "__main__":
     reward_callback = MARLRewardCallback(
         num_pursuers=env_config["num_pursuers"], num_evaders=env_config["num_evaders"]
     )
+    
+    wandb_callback = WandbCallback(
+        # model_save_path=f"{model_save_dir}/", # 模型保存路径
+        # model_save_freq=10000, # 每隔多少步保存一次模型
+        # gradient_save_freq=1000, # 记录梯度，用于调试
+        verbose=2,
+    )
+    
     capture_debug = CaptureDebugCallback(verbose=callback_verbose_level)
     escape_debug = EscapeDebugCallback(verbose=callback_verbose_level)
     detailed_debug = DetailedDebugCallback(verbose=callback_verbose_level)
@@ -458,6 +452,7 @@ if __name__ == "__main__":
     vec_env.close()
     logging.info("Training environment closed.")
 
+    run.finish() # Wandb run finish
     # === Print Final Summaries ===
     metrics = reward_callback.get_metrics_summary()
     logging.info("\n--- Training Summary ---")
