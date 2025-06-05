@@ -1,2 +1,6 @@
-Main branch separated
+2025-06-05
+Main branch separated at main_back and wrapMerge branch.
 Using self-defined black_death Wrapper. Because Official One needs Box observation. But here in GPE we are using Dict.
+gnn_policy_20250605_170328 ok! First time with multiagent reinforcement learning!
+That's totally insane!
+The main problem may lie in that the policy net that all agents are using the same. Thus the integration of ray[rllib] is necessary.
