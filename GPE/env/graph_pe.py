@@ -1,17 +1,16 @@
 import numpy as np
 import gymnasium as gym
-from gymnasium.spaces import Discrete, Box, Dict
+from gymnasium.spaces import Discrete, Box, Dict as GymDict
 import random
 from copy import copy
 import networkx as nx
 from pettingzoo import ParallelEnv
-from pettingzoo import AECEnv
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from typing import Optional, Dict, List, Tuple, Any
 from gymnasium.utils import EzPickle
-
-# EzPickle
+from torch_geometric.data import Data 
+from torch_geometric.utils import from_networkx 
 
 
 class GPE(ParallelEnv):
@@ -69,9 +68,9 @@ class GPE(ParallelEnv):
             n = int(np.ceil(num_nodes / m))
             actual_num_nodes = m * n
             self.num_nodes = actual_num_nodes
-            if self.grid_m == 0:
+            if self.grid_m is None:
                 self.grid_m = m
-            if self.grid_n == 0:
+            if self.grid_n is None:
                 self.grid_n = n
             print(
                 f"GPE Init: Grid graph generated ({m}x{n}). Actual num_nodes set to {self.num_nodes}"
@@ -85,10 +84,8 @@ class GPE(ParallelEnv):
 
         self.pursuers = [f"pursuer_{i}" for i in range(self.num_pursuers)]
         self.evaders = [f"evader_{i}" for i in range(self.num_evaders)]
-        self.possible_agents = self.pursuers + self.evaders # All agents. Never changes.
-        self._agents = self.possible_agents.copy()  # All agents at start
-
-        self._initialize_spaces()
+        self.possible_agents = self.pursuers + self.evaders # All agents.
+        self._agents = self.possible_agents.copy()  # All agents active
 
         self.graph = None
         self.safe_node = None
@@ -109,44 +106,71 @@ class GPE(ParallelEnv):
         self.revisit_penalty = revisit_penalty
         self._visited_nodes = {agent: set() for agent in self.possible_agents} # Initialize visited nodes tracker
         
-        print("GPE environment initialized...")
         self.graph = self._generate_graph() # Initialize graph once
 
-    def _initialize_spaces(self):
-        """Initialize action and observation spaces for all agents."""
-        # TODO: Change the space
-        self.action_spaces = {
-            agent: Discrete(self.num_nodes) for agent in self.possible_agents
-        }
+        #--------add wrapper---------------------------------
+        if self.graph.number_of_nodes() > 0:
+            self.graph_edge_index = from_networkx(self.graph).edge_index.numpy()
+        else:
+            self.graph_edge_index = np.empty((2, 0), dtype=np.int64) # Empty graph
 
-        pursuer_obs_size = (
-            1  # position
-            + self.num_pursuers  # pursuers positions
-            + self.num_evaders  # evaders positions
-            + self.num_nodes  # adjacency
-            + self.num_nodes  # action_mask
-        )
-        evader_obs_size = (
-            1  # position
-            + 1  # safe_node (extra item for evader)
-            + self.num_pursuers
-            + self.num_evaders
-            + self.num_nodes
-            + self.num_nodes
-        )
-        flat_obs_size = max(pursuer_obs_size, evader_obs_size)
-
-        self.observation_spaces = {
-            agent: Box(
-                low=-1,
-                high=self.num_nodes,
-                shape=(flat_obs_size,),
+        self._node_feature_list = [
+            "is_self",
+            "is_pursuer",
+            "is_evader",
+            "is_safe_node",
+        ]
+        self.feature_dim = len(self._node_feature_list)
+        self.single_action_space = Discrete(self.num_nodes) 
+        self.single_observation_space = GymDict({
+            "node_features": Box(
+                low=0,
+                high=1,
+                shape=(self.num_nodes, self.feature_dim),
+                dtype=np.float32,
+            ),
+            "action_mask": Box(
+                low=0,
+                high=1,
+                shape=(self.num_nodes,),
                 dtype=np.float32,
             )
-            for agent in self.possible_agents
-        }
-        self._pursuer_padding_size = flat_obs_size - pursuer_obs_size
+        })
 
+        self._action_spaces = {agent: self.single_action_space for agent in self.possible_agents}
+        self._observation_spaces = {agent: self.single_observation_space for agent in self.possible_agents}
+
+        print("GPE environment initialized...")
+    
+        
+    @property
+    def agents(self):
+        """Return the currently active agents."""
+        return self._agents
+    
+    @property
+    def graph_connectivity(self) -> np.ndarray:
+        """
+        Returns the graph's edge index in COO format (shape: [2, num_edges]).
+        This is static information about the graph structure.
+        """
+        return self.graph_edge_index
+
+    @property
+    def action_spaces(self):
+        return self._action_spaces
+    
+    def action_space(self, agent):
+        return self.action_spaces[agent]
+    
+    @property
+    def observation_spaces(self):
+        return self._observation_spaces
+
+    def observation_space(self, agent):
+        return self.observation_spaces[agent]
+
+    
     def _generate_graph(self):
         """Generate a random graph or use the provided one.
         MARK: It should be changed to a certain range of connection for each node.
@@ -173,16 +197,14 @@ class GPE(ParallelEnv):
             self.np_random = np.random.RandomState(seed)
 
         self.timestep = 0
-        # self.graph = self._generate_graph() # Moved to __init__ for efficiency
         self._agents = self.possible_agents.copy()
         self.rewards = {agent: 0 for agent in self.agents}
         self.terminations = {agent: False for agent in self.agents}
         self.truncations = {agent: False for agent in self.agents}
         self.captured_evaders = set()
-        self._visited_nodes = {agent: set() for agent in self.possible_agents} # Reset visited nodes tracker
-        # self.last_pursuer_evader_distances = {}  # Reset the distance cache
+        self._visited_nodes = {agent: set() for agent in self.possible_agents}
         all_nodes = list(self.graph.nodes())
-        self.np_random.shuffle(all_nodes)  # Shuffle all nodes
+        self.np_random.shuffle(all_nodes) 
         self.agent_positions = {}
         infos = {agent: {} for agent in self.agents}
 
@@ -210,89 +232,107 @@ class GPE(ParallelEnv):
         # Return standard reset format
         print("GPE environment reset complete.")
         return observations, infos
-    
-    @property
-    def agents(self):
-        """Return the currently active agents."""
-        return self._agents
 
     
-    def _get_observation(self, agent):
-        """Generate observation for an agent, including action mask."""
-        
-        # 对于已终止的agent，返回零观察
-        if self.terminations.get(agent, False):
-            return self._get_terminal_observation(agent)
-        
-        position = self.agent_positions[agent]
-        neighbors = list(self.graph.neighbors(position))
+    def _get_action_mask(self, agent_id: str) -> np.ndarray:
+            """
+            Generate the action mask for the given agent.
+            A value of 1 means the action is valid, 0 otherwise.
+            The mask corresponds to choosing a target node.
+            """
+            action_mask = np.zeros(self.num_nodes, dtype=np.float32)
 
-        adjacency_obs = np.zeros(self.num_nodes, dtype=np.float32)
-        adjacency_obs[neighbors] = 1.0
+            # If agent is terminated or not active, no actions are valid
+            if self.terminations.get(agent_id, False) or agent_id not in self.agent_positions:
+                return action_mask
 
-        # 获取所有pursuer位置（包括已终止的，用-1标记）
-        pursuer_positions = np.array([
-            self.agent_positions[p] if not self.terminations.get(p, False) else -1.0
-            for p in self.pursuers
-        ], dtype=np.float32)
-        
-        # 获取所有evader位置（被捕获或已终止的用-1标记）
-        evader_positions = np.array([
-            self.agent_positions[e] if (e not in self.captured_evaders and 
-                                    not self.terminations.get(e, False)) else -1.0
-            for e in self.evaders
-        ], dtype=np.float32)
-
-        # 计算action mask - 已终止的agent无有效动作
-        action_mask = np.zeros(self.num_nodes, dtype=np.float32)
-        if not self.terminations.get(agent, False):
-            if self.allow_stay:
-                valid_action_indices = [position] + neighbors
-            else:
-                valid_action_indices = neighbors
+            current_position = self.agent_positions[agent_id]
             
-            valid_action_indices = [
-                idx for idx in valid_action_indices if 0 <= idx < self.num_nodes
-            ]
-            if valid_action_indices:
-                action_mask[valid_action_indices] = 1.0
-            elif self.allow_stay and (0 <= position < self.num_nodes):
-                action_mask[position] = 1.0
+            valid_action_indices = []
+            if 0 <= current_position < self.num_nodes: # Check if current_position is a valid node index
+                neighbors = list(self.graph.neighbors(current_position))
+                if self.allow_stay:
+                    valid_action_indices = [current_position] + neighbors
+                else:
+                    valid_action_indices = neighbors
+                
+                # Filter out invalid node indices just in case (e.g. graph changes, though not expected here)
+                valid_action_indices = [
+                    idx for idx in valid_action_indices if 0 <= idx < self.num_nodes
+                ]
 
-        # 构建观察向量
-        if agent.startswith("evader"):
-            observation_vector = np.concatenate([
-                np.array([float(position)], dtype=np.float32),
-                pursuer_positions,
-                evader_positions,
-                adjacency_obs,
-                action_mask,
-                np.array([float(self.safe_node)], dtype=np.float32),
-            ]).astype(np.float32)
-        else:  # pursuer
-            base_vector = np.concatenate([
-                np.array([float(position)], dtype=np.float32),
-                pursuer_positions,
-                evader_positions,
-                adjacency_obs,
-                action_mask,
-            ])
-            padding = np.zeros(self._pursuer_padding_size, dtype=np.float32)
-            observation_vector = np.concatenate([base_vector, padding]).astype(np.float32)
-
-        return observation_vector
-
-    def _get_terminal_observation(self, agent):
-        """为已终止的agent返回观察"""
-        # 计算观察向量的大小
-        if agent.startswith("evader"):
-            obs_size = (1 + len(self.pursuers) + len(self.evaders) + 
-                    self.num_nodes * 2 + 1)  # position + pursuers + evaders + adjacency + action_mask + safe_node
-        else:  # pursuer
-            obs_size = (1 + len(self.pursuers) + len(self.evaders) + 
-                    self.num_nodes * 2 + self._pursuer_padding_size)
+                if valid_action_indices:
+                    action_mask[valid_action_indices] = 1.0
+                elif self.allow_stay and (0 <= current_position < self.num_nodes): # If no neighbors but stay is allowed
+                    action_mask[current_position] = 1.0
+            
+            return action_mask
+    
+    def _get_node_features(self, agent_id: str) -> np.ndarray:
+        """
+        Generate node features for the GNN.
+        Features: "is_self", "is_pursuer", "is_evader", "is_safe_node"
+        """
+        node_features = np.zeros((self.num_nodes, self.feature_dim), dtype=np.float32)
         
-        return np.zeros(obs_size, dtype=np.float32)
+        current_agent_pos = self.agent_positions.get(agent_id, -1) # Use -1 if agent has no position
+
+        for node_idx in range(self.num_nodes):
+            features = np.zeros(self.feature_dim, dtype=np.float32)
+            
+            # "is_self"
+            if node_idx == current_agent_pos:
+                features[self._node_feature_list.index("is_self")] = 1.0
+            
+            # "is_pursuer"
+            for p_id in self.pursuers:
+                if not self.terminations.get(p_id, False) and \
+                   self.agent_positions.get(p_id) == node_idx:
+                    features[self._node_feature_list.index("is_pursuer")] = 1.0
+                    break # One pursuer is enough to mark the node
+            
+            # "is_evader"
+            for e_id in self.evaders:
+                if e_id not in self.captured_evaders and \
+                   not self.terminations.get(e_id, False) and \
+                   self.agent_positions.get(e_id) == node_idx:
+                    features[self._node_feature_list.index("is_evader")] = 1.0
+                    break # One evader is enough
+            
+            # "is_safe_node"
+            if node_idx == self.safe_node:
+                features[self._node_feature_list.index("is_safe_node")] = 1.0
+                
+            node_features[node_idx] = features
+            
+        return node_features
+
+    def _get_observation(self, agent_id: str) -> Dict[str, np.ndarray]:
+
+        if self.terminations.get(agent_id, False) or agent_id not in self._agents:
+            return self._get_terminal_observation(agent_id)
+
+        node_feats = self._get_node_features(agent_id)
+        action_m = self._get_action_mask(agent_id)
+        
+        return {
+            "node_features": node_feats,
+            "action_mask": action_m,
+        }
+
+    def _get_terminal_observation(self, agent_id: str) -> Dict[str, np.ndarray]:
+        """
+        Return a zeroed-out observation dictionary for a terminated or inactive agent.
+        """
+        term_node_features = np.zeros(
+            (self.num_nodes, self.feature_dim), dtype=np.float32
+        )
+        term_action_mask = np.zeros(self.num_nodes, dtype=np.float32)
+        
+        return {
+            "node_features": term_node_features,
+            "action_mask": term_action_mask,
+        }
 
     def step(self, actions: Dict[str, int]) -> Tuple[
         Dict[str, np.ndarray],
@@ -378,8 +418,6 @@ class GPE(ParallelEnv):
             for agent in self.agents:
                 if not terminations[agent]:
                     truncations[agent] = True
-
-        observations = {agent: self._get_observation(agent) for agent in self.agents}
 
         for agent in self.agents:
             terminations[agent] = self.terminations.get(agent, False)
@@ -467,13 +505,7 @@ class GPE(ParallelEnv):
                     self.terminations[agent] = True
 
 
-    def observation_space(self, agent):
-        """Return the observation space for a specific agent."""
-        return self.observation_spaces[agent]
 
-    def action_space(self, agent):
-        """Return the action space for a specific agent."""
-        return self.action_spaces[agent]
 
     def render(self):
         """Render the environment state with a fixed layout and static legend.
