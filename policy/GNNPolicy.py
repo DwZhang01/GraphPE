@@ -70,7 +70,7 @@ class GNNFeatureExtractor(BaseFeaturesExtractor):
         x = node_features_batch.reshape(-1, node_features_batch.shape[-1])
 
         # 2. Create the batched `edge_index` with correct offsets
-        static_edge_index = self.graph_edge_index_pt.to(device) # Shape (2, E)
+        static_edge_index = self.graph_edge_index_pt # Shape (2, E)
         num_edges_per_graph = static_edge_index.shape[1]
         
         # Create offsets for each graph in the batch: [0, N, 2N, 3N, ...]

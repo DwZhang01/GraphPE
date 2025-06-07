@@ -5,6 +5,7 @@ from wandb.integration.sb3 import WandbCallback
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 os.environ["WANDB_SILENT"] = "true"  # Disable Wandb logging to console
 os.environ["WANDB_MODE"] = "offline"  # Disable Wandb online mode for this run
+os.environ["WANDB_MODE"] = "disabled"
 import time
 import json
 import torch
