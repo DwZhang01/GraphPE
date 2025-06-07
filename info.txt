@@ -7,4 +7,5 @@ The main problem may lie in that the policy net that all agents are using the sa
 
 2025-06-07
 1. Finished The Batch Process in forward()
-2. The GNN Feature Extractor ONLY GIVES THE FEATURE of THE 'is_self' NODE, WHICH MAY BE WRONG!
+2. TODO: The GNN Feature Extractor ONLY GIVES THE FEATURE of THE 'is_self' NODE, WHICH MAY BE WRONG!
+3. TODO: Check the policy sharing.
