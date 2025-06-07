@@ -4,3 +4,7 @@ Using self-defined black_death Wrapper. Because Official One needs Box observati
 gnn_policy_20250605_170328 ok! First time with multiagent reinforcement learning!
 That's totally insane!
 The main problem may lie in that the policy net that all agents are using the same. Thus the integration of ray[rllib] is necessary.
+
+2025-06-07
+1. Finished The Batch Process in forward()
+2. The GNN Feature Extractor ONLY GIVES THE FEATURE of THE 'is_self' NODE, WHICH MAY BE WRONG!
